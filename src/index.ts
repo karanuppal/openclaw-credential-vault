@@ -17,7 +17,17 @@ import {
   CompiledScrubRule,
 } from "./scrubber.js";
 import { registerCliCommands } from "./cli.js";
-import { PluginApi, VaultConfig, ToolConfig } from "./types.js";
+import { PluginApi, VaultConfig, ToolConfig, PlaywrightCookie } from "./types.js";
+import {
+  isVaultPlaceholder,
+  extractVaultName,
+  resolveBrowserPassword,
+  findBrowserPasswordRule,
+  findAllBrowserCookieRules,
+  shouldInjectCookies,
+  removeExpiredCookies,
+  filterCookiesByDomain,
+} from "./browser.js";
 
 /** In-memory state for the running plugin */
 interface VaultState {
@@ -136,7 +146,138 @@ async function handleBeforeToolCall(
   const toolName = String(toolCall.tool ?? "");
   const params = (toolCall.params ?? {}) as Record<string, unknown>;
 
-  // Collect all injection rules from all configured tools
+  // --- Browser password: $vault: placeholder resolution ---
+  if (toolName === "browser") {
+    const action = String(params.action ?? "");
+    const text = params.text as string | undefined;
+
+    // Handle browser fill with $vault: placeholder
+    if (
+      (action === "act" || !action) &&
+      text &&
+      isVaultPlaceholder(text)
+    ) {
+      const vaultName = extractVaultName(text)!;
+      // Find the browser-password rule for this credential
+      const toolConfig = state.config.tools[vaultName];
+      if (toolConfig) {
+        const rule = findBrowserPasswordRule(vaultName, toolConfig.inject);
+        if (rule && rule.domainPin) {
+          // We need the current browser URL — it should be in params.url or
+          // we check params.targetUrl for context
+          const currentUrl = String(
+            params.url ?? params.targetUrl ?? ""
+          );
+          const cred = await getCredential(vaultName, state, "browser", currentUrl);
+          if (cred) {
+            const result = resolveBrowserPassword(
+              text,
+              currentUrl,
+              cred,
+              rule.domainPin
+            );
+            if (result.allowed && result.resolvedValue) {
+              params.text = result.resolvedValue;
+            } else {
+              // Block the action — return error instead of executing
+              return {
+                ...toolCall,
+                _blocked: true,
+                _error: result.error ?? "Domain pin check failed",
+                params,
+              };
+            }
+          }
+        }
+      }
+    }
+
+    // Handle nested request object (browser act with request param)
+    const request = params.request as Record<string, unknown> | undefined;
+    if (request && typeof request === "object") {
+      const reqText = request.text as string | undefined;
+      if (reqText && isVaultPlaceholder(reqText)) {
+        const vaultName = extractVaultName(reqText)!;
+        const toolConfig = state.config.tools[vaultName];
+        if (toolConfig) {
+          const rule = findBrowserPasswordRule(vaultName, toolConfig.inject);
+          if (rule && rule.domainPin) {
+            const currentUrl = String(
+              request.url ?? params.url ?? params.targetUrl ?? ""
+            );
+            const cred = await getCredential(vaultName, state, "browser", currentUrl);
+            if (cred) {
+              const resolveResult = resolveBrowserPassword(
+                reqText,
+                currentUrl,
+                cred,
+                rule.domainPin
+              );
+              if (resolveResult.allowed && resolveResult.resolvedValue) {
+                request.text = resolveResult.resolvedValue;
+                params.request = request;
+              } else {
+                return {
+                  ...toolCall,
+                  _blocked: true,
+                  _error: resolveResult.error ?? "Domain pin check failed",
+                  params,
+                };
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // --- Browser cookie injection on navigate ---
+    if (action === "navigate") {
+      const navUrl = String(params.url ?? "");
+      if (navUrl) {
+        const cookieRules = findAllBrowserCookieRules(state.config.tools);
+        const cookiesToInject: PlaywrightCookie[] = [];
+
+        for (const { vaultToolName, rule } of cookieRules) {
+          if (rule.domainPin && shouldInjectCookies(navUrl, rule.domainPin)) {
+            const cred = await getCredential(
+              vaultToolName,
+              state,
+              "browser-cookie",
+              navUrl
+            );
+            if (cred) {
+              try {
+                const cookieData = JSON.parse(cred);
+                let cookies: PlaywrightCookie[];
+                if (Array.isArray(cookieData)) {
+                  cookies = cookieData;
+                } else if (cookieData.cookies && Array.isArray(cookieData.cookies)) {
+                  cookies = cookieData.cookies;
+                } else {
+                  continue;
+                }
+                // Remove expired, filter by domain
+                const valid = filterCookiesByDomain(
+                  removeExpiredCookies(cookies),
+                  rule.domainPin
+                );
+                cookiesToInject.push(...valid);
+              } catch {
+                // Invalid cookie JSON — skip
+              }
+            }
+          }
+        }
+
+        if (cookiesToInject.length > 0) {
+          // Attach cookies to params for the browser tool to inject via addCookies()
+          params._vaultCookies = cookiesToInject;
+        }
+      }
+    }
+  }
+
+  // --- Standard exec/web_fetch injection (existing logic) ---
   for (const [vaultToolName, toolConfig] of Object.entries(
     state.config.tools
   )) {

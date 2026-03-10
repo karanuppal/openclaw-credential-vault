@@ -4,11 +4,38 @@
 
 /** Injection rule for a specific tool call type */
 export interface InjectionRule {
-  tool: string; // "exec" | "web_fetch" etc.
+  tool: string; // "exec" | "web_fetch" | "browser" etc.
   commandMatch?: string; // glob pattern for exec commands
-  urlMatch?: string; // glob pattern for web_fetch URLs
+  urlMatch?: string; // glob pattern for web_fetch/browser URLs
   env?: Record<string, string>; // env vars to inject (value contains $vault:toolname)
   headers?: Record<string, string>; // headers to inject
+  /** Browser credential injection type */
+  type?: "browser-password" | "browser-cookie";
+  /** Domain pinning — credential only resolves on matching domains */
+  domainPin?: string[];
+  /** Browser injection method: "fill" for password, "cookie-jar" for cookies */
+  method?: "fill" | "cookie-jar";
+  /** Hint for password field identification */
+  fieldHint?: string;
+}
+
+/** A single Playwright-compatible cookie */
+export interface PlaywrightCookie {
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  expires: number; // Unix epoch seconds, -1 for session
+  httpOnly: boolean;
+  secure: boolean;
+  sameSite: "Strict" | "Lax" | "None";
+}
+
+/** Browser-cookie credential stored as JSON array of PlaywrightCookie */
+export interface BrowserCookieCredential {
+  cookies: PlaywrightCookie[];
+  domain: string;
+  capturedAt: string; // ISO timestamp
 }
 
 /** Scrub configuration for a tool */
