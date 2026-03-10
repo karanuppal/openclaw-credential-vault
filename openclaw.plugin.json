@@ -1,0 +1,23 @@
+{
+  "id": "credential-vault",
+  "name": "Credential Vault",
+  "version": "0.1.0",
+  "description": "Encrypts, injects, and scrubs external tool credentials at runtime",
+  "entry": "dist/index.js",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "vaultDir": {
+        "type": "string",
+        "description": "Directory for vault storage",
+        "default": "~/.openclaw/vault"
+      },
+      "masterKeyMode": {
+        "type": "string",
+        "enum": ["passphrase", "machine"],
+        "description": "How the master key is derived",
+        "default": "machine"
+      }
+    }
+  }
+}
