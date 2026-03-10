@@ -5,6 +5,7 @@ import {
   scrubObject,
   containsCredentials,
   scrubLiteralCredential,
+  GLOBAL_SCRUB_PATTERNS,
 } from "../src/scrubber.js";
 import { ToolConfig } from "../src/types.js";
 
@@ -44,8 +45,8 @@ const testTools: Record<string, ToolConfig> = {
 describe("compileScrubRules", () => {
   it("should compile rules for all tools", () => {
     const rules = compileScrubRules(testTools);
-    // 2 stripe + 1 github + 1 gumroad = 4 rules
-    expect(rules.length).toBe(4);
+    // 2 stripe + 1 github + 1 gumroad + global patterns (telegram, slack) = 6 rules
+    expect(rules.length).toBe(4 + GLOBAL_SCRUB_PATTERNS.length);
   });
 
   it("should set correct replacement text", () => {

@@ -56,6 +56,41 @@ export interface ToolCallContext {
   params: Record<string, unknown>;
 }
 
+/** Audit log event — credential access */
+export interface AuditCredentialAccess {
+  type: "credential_access";
+  timestamp: string;
+  tool: string;
+  credential: string;
+  injectionType: string;
+  command: string;
+  sessionKey: string;
+  durationMs: number;
+  success: boolean;
+}
+
+/** Audit log event — scrubbing */
+export interface AuditScrubEvent {
+  type: "scrub";
+  timestamp: string;
+  hook: string;
+  credential: string;
+  pattern: string;
+  replacements: number;
+  sessionKey: string;
+}
+
+/** Audit log event — compaction */
+export interface AuditCompactionEvent {
+  type: "compaction";
+  timestamp: string;
+  sessionKey: string;
+  scrubbingActive: boolean;
+}
+
+/** Union of all audit event types */
+export type AuditEvent = AuditCredentialAccess | AuditScrubEvent | AuditCompactionEvent;
+
 /** Plugin API interface (subset we use) */
 export interface PluginApi {
   on(

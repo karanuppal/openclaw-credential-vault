@@ -30,6 +30,7 @@ import {
   KNOWN_TOOLS,
 } from "./registry.js";
 import { compileScrubRules, scrubText } from "./scrubber.js";
+import { readAuditLog, computeAuditStats } from "./audit.js";
 import { ToolConfig, CliProgram } from "./types.js";
 
 /**
@@ -573,5 +574,84 @@ export function registerCliCommands(program: CliProgram): void {
       }
 
       console.log(`\n${issues === 0 ? "✓" : "⚠"} Audit complete: ${issues} issue(s) found`);
+    });
+
+  // vault logs
+  vault
+    .command("logs")
+    .description("View audit log — credential access and scrubbing events")
+    .option("--tool <name>", "Filter by tool name")
+    .option("--type <type>", "Filter by event type (credential_access, scrub, compaction)")
+    .option("--last <duration>", "Time-based filter (e.g., 24h, 7d, 30m)")
+    .option("--json", "Raw JSONL output")
+    .option("--stats", "Aggregate telemetry: access frequency, scrub counts, last access")
+    .action(async (options: {
+      tool?: string;
+      type?: string;
+      last?: string;
+      json?: boolean;
+      stats?: boolean;
+    }) => {
+      const vaultDir = getVaultDir();
+
+      if (options.stats) {
+        const stats = computeAuditStats(vaultDir);
+        console.log("Audit Log Statistics\n");
+        console.log(`Total events: ${stats.totalEvents}`);
+        console.log(`  Credential accesses: ${stats.credentialAccesses}`);
+        console.log(`  Scrubbing events: ${stats.scrubEvents}`);
+        console.log(`  Compaction events: ${stats.compactionEvents}`);
+
+        if (Object.keys(stats.byTool).length > 0) {
+          console.log("\nBy Tool:");
+          for (const [tool, data] of Object.entries(stats.byTool)) {
+            console.log(`  ${tool}: ${data.accesses} accesses, ${data.scrubs} scrubs${data.lastAccess ? `, last: ${data.lastAccess}` : ""}`);
+          }
+        }
+
+        if (Object.keys(stats.byHook).length > 0) {
+          console.log("\nScrubs by Hook:");
+          for (const [hook, count] of Object.entries(stats.byHook)) {
+            console.log(`  ${hook}: ${count}`);
+          }
+        }
+        return;
+      }
+
+      const events = readAuditLog({
+        tool: options.tool,
+        type: options.type,
+        last: options.last,
+      }, vaultDir);
+
+      if (events.length === 0) {
+        console.log("No audit events found.");
+        return;
+      }
+
+      if (options.json) {
+        for (const event of events) {
+          console.log(JSON.stringify(event));
+        }
+        return;
+      }
+
+      // Pretty-print events
+      for (const event of events) {
+        const ts = new Date(event.timestamp).toLocaleString();
+        switch (event.type) {
+          case "credential_access":
+            console.log(`[${ts}] ACCESS ${event.credential} via ${event.tool} (${event.injectionType}) — ${event.command.substring(0, 60)}`);
+            break;
+          case "scrub":
+            console.log(`[${ts}] SCRUB  ${event.credential} in ${event.hook} (${event.replacements} replacement${event.replacements > 1 ? "s" : ""})`);
+            break;
+          case "compaction":
+            console.log(`[${ts}] COMPACT scrubbing=${event.scrubbingActive ? "active" : "inactive"}`);
+            break;
+        }
+      }
+
+      console.log(`\n${events.length} event(s) shown`);
     });
 }
