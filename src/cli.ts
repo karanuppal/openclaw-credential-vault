@@ -335,7 +335,7 @@ export function registerCliCommands(program: CliProgram): void {
     .option("--type <type>", "Credential type: browser-cookie, browser-password, or omit for default")
     .option("--domain <domain>", "Domain pin (required for browser-cookie/browser-password, e.g. .amazon.com)")
     .option("--yes", "Skip confirmation prompt (accept defaults)")
-    .action(async (tool: string, options: { key?: string; type?: string; domain?: string }) => {
+    .action(async (tool: string, options: { key?: string; type?: string; domain?: string; yes?: boolean }) => {
       // Route to browser-cookie handler
       if (options.type === "browser-cookie") {
         await handleBrowserCookieAdd(tool, options.domain);
@@ -553,6 +553,7 @@ export function registerCliCommands(program: CliProgram): void {
     .description("Rotate a credential (update the key, keep all mappings)")
     .argument("[tool]", "Tool name (omit with --check or --all)")
     .option("--key <credential>", "The new credential/API key")
+    .option("--yes", "Skip confirmation prompt")
     .option("--check", "Show all overdue rotations without rotating")
     .option("--all", "Emergency mass rotation: guided walkthrough of all credentials")
     .action(async (tool: string | undefined, options: { key?: string; check?: boolean; all?: boolean }) => {
@@ -728,6 +729,18 @@ export function registerCliCommands(program: CliProgram): void {
       if (reloaded) {
         console.log("✓ Gateway reloaded (SIGUSR2) — no restart needed");
       }
+
+      // Post-rotation security checklist
+      const toolConfig = updatedConfig.tools[tool];
+      const revokeUrl = toolConfig?.rotation?.revokeUrl;
+      console.log("");
+      console.log("⚠ Post-rotation checklist:");
+      console.log("  1. Revoke the old token in the service dashboard");
+      if (revokeUrl) {
+        console.log(`     → ${revokeUrl}`);
+      }
+      console.log("  2. Check for plaintext copies (.env files, CLI configs, etc.)");
+      console.log("  3. If the old token was ever passed through an AI agent, treat it as compromised");
     });
 
   // vault remove <tool>
