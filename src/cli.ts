@@ -334,6 +334,7 @@ export function registerCliCommands(program: CliProgram): void {
     .option("--key <credential>", "The credential/API key to store")
     .option("--type <type>", "Credential type: browser-cookie, browser-password, or omit for default")
     .option("--domain <domain>", "Domain pin (required for browser-cookie/browser-password, e.g. .amazon.com)")
+    .option("--yes", "Skip confirmation prompt (accept defaults)")
     .action(async (tool: string, options: { key?: string; type?: string; domain?: string }) => {
       // Route to browser-cookie handler
       if (options.type === "browser-cookie") {
@@ -369,7 +370,7 @@ export function registerCliCommands(program: CliProgram): void {
       }
 
       // ── Confirmation prompt: Does this look right? [Y/n/edit] ──
-      const confirmation = await promptUser("\n  Does this look right? [Y/n/edit] ");
+      const confirmation = options.yes ? "Y" : await promptUser("\n  Does this look right? [Y/n/edit] ");
       const confirmLower = confirmation.toLowerCase();
 
       if (confirmLower === "n" || confirmLower === "no") {
@@ -388,7 +389,7 @@ export function registerCliCommands(program: CliProgram): void {
         if (urlAnswer) overrides.apiUrl = urlAnswer;
         const cliAnswer = await promptUser("  CLI tool name (if any, press Enter to skip)? ");
         if (cliAnswer) overrides.cliTool = cliAnswer;
-      } else if (guess.needsPrompt) {
+      } else if (guess.needsPrompt && !options.yes) {
         // Unknown/generic format: prompt for missing context
         if (guess.promptHints.askServiceName) {
           const svcAnswer = await promptUser("\n  What service is this for? ");
