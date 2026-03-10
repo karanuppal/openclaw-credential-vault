@@ -98,6 +98,41 @@ export const KNOWN_TOOLS: Record<string, KnownToolDef> = {
       patterns: ["sk-ant-[a-zA-Z0-9-]{80,}"],
     },
   },
+  amazon: {
+    inject: [
+      {
+        tool: "browser",
+        type: "browser-password",
+        domainPin: [".amazon.com", ".amazon.co.uk", ".amazon.de"],
+        method: "fill",
+        fieldHint: "password",
+      },
+      {
+        tool: "browser",
+        type: "browser-cookie",
+        domainPin: [".amazon.com"],
+        method: "cookie-jar",
+        urlMatch: "*.amazon.com/*",
+      },
+    ],
+    scrub: {
+      patterns: [],
+    },
+  },
+  netflix: {
+    inject: [
+      {
+        tool: "browser",
+        type: "browser-password",
+        domainPin: [".netflix.com"],
+        method: "fill",
+        fieldHint: "password",
+      },
+    ],
+    scrub: {
+      patterns: [],
+    },
+  },
 };
 
 /**
