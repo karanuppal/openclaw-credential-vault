@@ -49,6 +49,19 @@ export interface KnownToolDef {
   scrub: ScrubConfig;
 }
 
+/** Rotation support level for a credential */
+export type RotationSupport = "manual" | "cli" | "api";
+
+/** Extended rotation metadata for a credential */
+export interface RotationMetadata {
+  rotationIntervalDays?: number;
+  scopes?: string[];
+  rotationProcedure?: string;
+  revokeUrl?: string;
+  rotationSupport?: RotationSupport;
+  label?: string;
+}
+
 /** Per-tool configuration stored in tools.yaml */
 export interface ToolConfig {
   name: string;
@@ -56,6 +69,29 @@ export interface ToolConfig {
   lastRotated: string; // ISO timestamp
   inject: InjectionRule[];
   scrub: ScrubConfig;
+  rotation?: RotationMetadata;
+}
+
+/** Rotation status for a single credential (used by vault_status) */
+export interface CredentialRotationStatus {
+  name: string;
+  label?: string;
+  lastRotated: string;
+  rotationIntervalDays?: number;
+  daysOverdue: number;
+  isOverdue: boolean;
+  rotationSupport?: RotationSupport;
+  revokeUrl?: string;
+  rotationProcedure?: string;
+  scopes?: string[];
+  lastAccess?: string;
+}
+
+/** vault_status tool result */
+export interface VaultStatusResult {
+  totalCredentials: number;
+  overdueCount: number;
+  credentials: CredentialRotationStatus[];
 }
 
 /** Full tools.yaml structure */
@@ -118,6 +154,23 @@ export interface AuditCompactionEvent {
 /** Union of all audit event types */
 export type AuditEvent = AuditCredentialAccess | AuditScrubEvent | AuditCompactionEvent;
 
+/** Agent tool interface (subset we use for vault_status) */
+export interface AgentToolDef {
+  name: string;
+  label: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  execute: (
+    toolCallId: string,
+    params: Record<string, unknown>,
+    signal?: AbortSignal,
+    onUpdate?: (partialResult: unknown) => void
+  ) => Promise<{
+    content: Array<{ type: "text"; text: string }>;
+    details: unknown;
+  }>;
+}
+
 /** Plugin API interface (subset we use) */
 export interface PluginApi {
   on(
@@ -128,6 +181,10 @@ export interface PluginApi {
   registerCli(
     fn: (ctx: { program: CliProgram }) => void,
     options?: { commands: string[] }
+  ): void;
+  registerTool(
+    tool: AgentToolDef | ((ctx: unknown) => AgentToolDef | null),
+    options?: { name?: string; names?: string[]; optional?: boolean }
   ): void;
 }
 

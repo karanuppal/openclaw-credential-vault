@@ -83,9 +83,28 @@ export function promptUser(question: string): Promise<string> {
 
 /**
  * Read multiline input from stdin until an empty line or EOF.
- * Exported for testing (can be overridden).
+ * Exported for testing (can be overridden via setStdinReader).
  */
+let _stdinReaderOverride: ((prompt: string) => Promise<string>) | null = null;
+
+/**
+ * Replace the stdin reader for testing.
+ */
+export function setStdinReader(reader: (prompt: string) => Promise<string>): void {
+  _stdinReaderOverride = reader;
+}
+
+/**
+ * Reset stdin reader to default implementation.
+ */
+export function resetStdinReader(): void {
+  _stdinReaderOverride = null;
+}
+
 export async function readStdinInput(prompt: string): Promise<string> {
+  if (_stdinReaderOverride) {
+    return _stdinReaderOverride(prompt);
+  }
   const readline = await import("node:readline");
   const rl = readline.createInterface({
     input: process.stdin,

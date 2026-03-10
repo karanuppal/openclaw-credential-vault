@@ -41,12 +41,20 @@ export function readConfig(vaultDir: string): VaultConfig {
   if (!parsed || typeof parsed !== "object") {
     return { ...DEFAULT_CONFIG, tools: {} };
   }
+  const tools = parsed.tools ?? {};
+  for (const [, tool] of Object.entries(tools)) {
+    const t = tool as any;
+    if (t && typeof t === "object" && !t.rotation) {
+      t.rotation = {};
+    }
+  }
+
   return {
     version: parsed.version ?? 1,
     masterKeyMode: parsed.masterKeyMode ?? "machine",
     resolverMode: parsed.resolverMode ?? "inline",
     resolverPath: parsed.resolverPath,
-    tools: parsed.tools ?? {},
+    tools,
   };
 }
 
@@ -133,6 +141,64 @@ export function readMeta(
   } catch {
     return null;
   }
+}
+
+/**
+ * Check which credentials are overdue for rotation.
+ */
+export function getOverdueCredentials(
+  config: VaultConfig,
+  defaultIntervalDays = 90
+): Array<{
+  name: string;
+  label?: string;
+  lastRotated: string;
+  rotationIntervalDays: number;
+  daysSinceRotation: number;
+  daysOverdue: number;
+  rotationProcedure?: string;
+  revokeUrl?: string;
+  rotationSupport?: string;
+  scopes?: string[];
+}> {
+  const now = Date.now();
+  const results: Array<{
+    name: string;
+    label?: string;
+    lastRotated: string;
+    rotationIntervalDays: number;
+    daysSinceRotation: number;
+    daysOverdue: number;
+    rotationProcedure?: string;
+    revokeUrl?: string;
+    rotationSupport?: string;
+    scopes?: string[];
+  }> = [];
+
+  for (const [name, tool] of Object.entries(config.tools)) {
+    const intervalDays = tool.rotation?.rotationIntervalDays ?? defaultIntervalDays;
+    if (!tool.lastRotated) continue;
+
+    const lastRotatedMs = new Date(tool.lastRotated).getTime();
+    const daysSince = Math.floor((now - lastRotatedMs) / (1000 * 60 * 60 * 24));
+
+    if (daysSince > intervalDays) {
+      results.push({
+        name,
+        label: tool.rotation?.label,
+        lastRotated: tool.lastRotated,
+        rotationIntervalDays: intervalDays,
+        daysSinceRotation: daysSince,
+        daysOverdue: daysSince - intervalDays,
+        rotationProcedure: tool.rotation?.rotationProcedure,
+        revokeUrl: tool.rotation?.revokeUrl,
+        rotationSupport: tool.rotation?.rotationSupport,
+        scopes: tool.rotation?.scopes,
+      });
+    }
+  }
+
+  return results;
 }
 
 /**

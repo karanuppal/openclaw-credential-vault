@@ -9,7 +9,7 @@
  * - Scrubbing (after_tool_call, tool_result_persist, before_message_write, message_sending): priority 1 — runs FIRST (scrub before other plugins)
  */
 
-import { readConfig, getVaultDir, readMeta } from "./config.js";
+import { readConfig, getVaultDir, readMeta, getOverdueCredentials } from "./config.js";
 import { readCredentialFile, getMachinePassphrase } from "./crypto.js";
 import { resolveViaRustBinary } from "./resolver.js";
 import { findMatchingRules } from "./registry.js";
@@ -24,6 +24,7 @@ import {
 } from "./scrubber.js";
 import { registerCliCommands } from "./cli.js";
 import { logCredentialAccess, logScrubEvent, logCompactionEvent } from "./audit.js";
+import { createVaultStatusTool } from "./vault-status.js";
 import { PluginApi, VaultConfig, ToolConfig, PlaywrightCookie } from "./types.js";
 import {
   isVaultPlaceholder,
@@ -534,17 +535,18 @@ async function handleGatewayStart(): Promise<void> {
     return;
   }
 
-  // 2. Check rotation status for all tools
-  const now = Date.now();
-  const ROTATION_WARN_DAYS = 90;
-  for (const [name, tool] of Object.entries(state.config.tools)) {
-    if (tool.lastRotated) {
-      const age = now - new Date(tool.lastRotated).getTime();
-      const days = Math.floor(age / (1000 * 60 * 60 * 24));
-      if (days > ROTATION_WARN_DAYS) {
-        console.warn(`[vault] ⚠ Tool "${name}" last rotated ${days} days ago (>${ROTATION_WARN_DAYS}d)`);
+  // 2. Check rotation status for all tools using per-credential intervals
+  const overdue = getOverdueCredentials(state.config);
+  if (overdue.length > 0) {
+    console.warn(`[vault] ⚠ ${overdue.length} credential(s) overdue for rotation:`);
+    for (const cred of overdue) {
+      const label = cred.label ? ` (${cred.label})` : "";
+      console.warn(`[vault]   - ${cred.name}${label}: ${cred.daysSinceRotation} days since rotation (interval: ${cred.rotationIntervalDays}d, ${cred.daysOverdue}d overdue)`);
+      if (cred.revokeUrl) {
+        console.warn(`[vault]     Revoke: ${cred.revokeUrl}`);
       }
     }
+    console.warn(`[vault] Run 'openclaw vault rotate --check' for details`);
   }
 
   // 3. Cache warm: pre-decrypt all credentials
@@ -586,6 +588,12 @@ export default function register(api: PluginApi): void {
     },
     { commands: ["vault"] }
   );
+
+  // Register vault_status agent tool
+  api.registerTool(createVaultStatusTool(), {
+    name: "vault_status",
+    optional: true,
+  });
 
   // Hot-reload: listen for SIGUSR2 to reload config
   process.on("SIGUSR2", () => {
