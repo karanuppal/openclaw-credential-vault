@@ -32,7 +32,7 @@ export const GLOBAL_SCRUB_PATTERNS: Array<{ name: string; pattern: string }> = [
  * Env variable name patterns — variable names that suggest the value is a secret.
  * Matches lines like KEY=value, TOKEN=value, etc. and redacts the value.
  */
-const ENV_VAR_PATTERN = /\b([A-Z_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API_KEY|APIKEY)[A-Z_]*)=([^\s\n]+)/gi;
+const ENV_VAR_PATTERN = /\b([A-Z_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API_KEY|APIKEY)[A-Z_]*)=([^\s\n]+)/g;
 
 /**
  * In-memory set of literal credential values for hash-based scrubbing.
