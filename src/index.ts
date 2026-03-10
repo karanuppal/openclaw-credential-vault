@@ -361,17 +361,23 @@ async function handleBeforeToolCall(
       // Inject environment variables
       if (rule.env) {
         const existingEnv = (params.env ?? {}) as Record<string, string>;
+        const envExports: string[] = [];
         for (const [envKey, envVal] of Object.entries(rule.env)) {
           const resolved = await resolveVaultRef(envVal, state, toolName, cmdStr);
           existingEnv[envKey] = resolved;
-          // Also set on process.env so child processes inherit immediately
-          // (params.env may not be applied by the exec tool for hook-injected values)
           process.env[envKey] = resolved;
-          // Track for cleanup after tool call
           if (!state.injectedEnvVars) state.injectedEnvVars = [];
           state.injectedEnvVars.push(envKey);
+          // Build export prefix — single quotes to prevent shell interpretation
+          const escaped = resolved.replace(/'/g, "'\\''");
+          envExports.push(`export ${envKey}='${escaped}'`);
         }
         params.env = existingEnv;
+        // Prepend exports to command so subprocess inherits the credentials
+        // The credential in the command string is scrubbed by tool_result_persist
+        if (envExports.length > 0 && toolName === "exec" && params.command) {
+          params.command = `${envExports.join(" && ")} && ${params.command}`;
+        }
 
         // Track injection for audit
         state.currentInjections.push({
