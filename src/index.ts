@@ -188,14 +188,19 @@ function scrubWriteEditContent(
 /**
  * before_tool_call handler: inject credentials into tool call parameters
  * AND scrub write/edit tool content (Phase 3D).
+ *
+ * OpenClaw API signature:
+ *   (event: {toolName, params, runId?, toolCallId?}, ctx: {agentId?, sessionKey?, sessionId?, runId?, toolName, toolCallId?})
+ *   => {params?, block?, blockReason?} | void
  */
 async function handleBeforeToolCall(
-  toolCall: Record<string, unknown>
-): Promise<Record<string, unknown>> {
-  if (!state) return toolCall;
+  event: { toolName: string; params: Record<string, unknown>; runId?: string; toolCallId?: string },
+  _ctx: { agentId?: string; sessionKey?: string; sessionId?: string; runId?: string; toolName: string; toolCallId?: string }
+): Promise<{ params?: Record<string, unknown>; block?: boolean; blockReason?: string } | void> {
+  if (!state) return;
 
-  const toolName = String(toolCall.tool ?? "");
-  let params = (toolCall.params ?? {}) as Record<string, unknown>;
+  const toolName = event.toolName;
+  let params = { ...event.params };
 
   // Phase 3D: Intercept write/edit tools — scrub credential patterns from content
   if (toolName === "write" || toolName === "edit") {
@@ -243,10 +248,8 @@ async function handleBeforeToolCall(
             } else {
               // Block the action — return error instead of executing
               return {
-                ...toolCall,
-                _blocked: true,
-                _error: result.error ?? "Domain pin check failed",
-                params,
+                block: true,
+                blockReason: result.error ?? "Domain pin check failed",
               };
             }
           }
@@ -280,10 +283,8 @@ async function handleBeforeToolCall(
                 params.request = request;
               } else {
                 return {
-                  ...toolCall,
-                  _blocked: true,
-                  _error: resolveResult.error ?? "Domain pin check failed",
-                  params,
+                  block: true,
+                  blockReason: resolveResult.error ?? "Domain pin check failed",
                 };
               }
             }
@@ -397,14 +398,24 @@ async function handleBeforeToolCall(
     }
   }
 
-  return { ...toolCall, params };
+  return { params };
 }
 
 /**
- * after_tool_call handler: scrub credentials from tool output + audit logging.
+ * after_tool_call handler: audit logging for credential access events.
+ *
+ * OpenClaw API signature:
+ *   (event: {toolName, params, runId?, toolCallId?, result?, error?, durationMs?}, ctx: PluginHookToolContext)
+ *   => void
+ *
+ * Note: after_tool_call cannot modify the result — it's observe-only.
+ * Scrubbing of results happens in tool_result_persist instead.
  */
-function handleAfterToolCall(result: unknown): unknown {
-  if (!state) return result;
+function handleAfterToolCall(
+  event: { toolName: string; params: Record<string, unknown>; runId?: string; toolCallId?: string; result?: unknown; error?: string; durationMs?: number },
+  _ctx: { agentId?: string; sessionKey?: string; sessionId?: string; runId?: string; toolName: string; toolCallId?: string }
+): void {
+  if (!state) return;
 
   // Phase 3C: Audit logging for credential access events
   const now = Date.now();
@@ -419,62 +430,73 @@ function handleAfterToolCall(result: unknown): unknown {
     }, state.vaultDir);
   }
   state.currentInjections = [];
-
-  // Scrub output with tracking for audit
-  if (typeof result === "string") {
-    const { text, replacements } = scrubTextWithTracking(result, state.scrubRules);
-    // Log scrub events
-    for (const r of replacements) {
-      logScrubEvent({
-        hook: "after_tool_call",
-        credential: r.toolName,
-        pattern: r.pattern,
-        replacements: r.count,
-      }, state.vaultDir);
-    }
-    return text;
-  }
-
-  return scrubObject(result, state.scrubRules);
 }
 
 /**
  * tool_result_persist handler: final scrub before writing to session transcript.
+ *
+ * OpenClaw API signature:
+ *   (event: {toolName?, toolCallId?, message: AgentMessage, isSynthetic?}, ctx: {agentId?, sessionKey?, toolName?, toolCallId?})
+ *   => {message?: AgentMessage} | void
  */
-function handleToolResultPersist(result: unknown): unknown {
-  if (!state) return result;
+function handleToolResultPersist(
+  event: { toolName?: string; toolCallId?: string; message: Record<string, unknown>; isSynthetic?: boolean },
+  _ctx: { agentId?: string; sessionKey?: string; toolName?: string; toolCallId?: string }
+): { message?: Record<string, unknown> } | void {
+  if (!state) return;
 
-  let scrubbed = scrubObject(result, state.scrubRules);
+  // Deep-scrub the message object
+  const scrubbed = scrubObject(event.message, state.scrubRules) as Record<string, unknown>;
 
-  // Also scrub literal cached credentials
-  if (typeof scrubbed === "string") {
+  // Also scrub literal cached credentials from text content
+  if (scrubbed && typeof scrubbed.content === "string") {
+    let content = scrubbed.content as string;
     for (const [toolName, cred] of state.credentialCache.entries()) {
-      scrubbed = scrubLiteralCredential(
-        scrubbed as string,
-        cred,
-        toolName
-      );
+      content = scrubLiteralCredential(content, cred, toolName);
+    }
+    scrubbed.content = content;
+  }
+  // Handle array content (common in AgentMessage)
+  if (scrubbed && Array.isArray(scrubbed.content)) {
+    for (const part of scrubbed.content) {
+      if (part && typeof part === "object" && typeof part.text === "string") {
+        let text = part.text;
+        for (const [toolName, cred] of state.credentialCache.entries()) {
+          text = scrubLiteralCredential(text, cred, toolName);
+        }
+        part.text = text;
+      }
     }
   }
 
-  return scrubbed;
+  return { message: scrubbed };
 }
 
 /**
  * before_message_write handler (Phase 3C): scrub ALL messages before transcript write.
  * Priority 1 — runs FIRST before other plugins.
+ *
+ * OpenClaw API signature:
+ *   (event: {message: AgentMessage, sessionKey?, agentId?}, ctx: {agentId?, sessionKey?})
+ *   => {block?, message?: AgentMessage} | void
  */
-function handleBeforeMessageWrite(message: unknown): unknown {
-  if (!state) return message;
+function handleBeforeMessageWrite(
+  event: { message: Record<string, unknown>; sessionKey?: string; agentId?: string },
+  _ctx: { agentId?: string; sessionKey?: string }
+): { block?: boolean; message?: Record<string, unknown> } | void {
+  if (!state) return;
 
-  if (typeof message === "string") {
-    const { text, replacements } = scrubTextWithTracking(message, state.scrubRules);
-    // Also scrub literal cached credentials
-    let result = text;
+  const message = event.message;
+  const scrubbed = scrubObject(message, state.scrubRules) as Record<string, unknown>;
+
+  // Scrub literal cached credentials from text content fields
+  if (scrubbed && typeof scrubbed.content === "string") {
+    let content = scrubbed.content as string;
+    const { text, replacements } = scrubTextWithTracking(content, state.scrubRules);
+    content = text;
     for (const [toolName, cred] of state.credentialCache.entries()) {
-      result = scrubLiteralCredential(result, cred, toolName);
+      content = scrubLiteralCredential(content, cred, toolName);
     }
-    // Log scrub events
     for (const r of replacements) {
       logScrubEvent({
         hook: "before_message_write",
@@ -483,33 +505,60 @@ function handleBeforeMessageWrite(message: unknown): unknown {
         replacements: r.count,
       }, state.vaultDir);
     }
-    return result;
+    scrubbed.content = content;
+  }
+  // Handle array content
+  if (scrubbed && Array.isArray(scrubbed.content)) {
+    for (const part of scrubbed.content) {
+      if (part && typeof part === "object" && typeof part.text === "string") {
+        let text = part.text;
+        for (const [toolName, cred] of state.credentialCache.entries()) {
+          text = scrubLiteralCredential(text, cred, toolName);
+        }
+        part.text = text;
+      }
+    }
   }
 
-  return scrubObject(message, state.scrubRules);
+  return { message: scrubbed };
 }
 
 /**
  * message_sending handler: scrub credentials from outbound messages.
+ *
+ * OpenClaw API signature:
+ *   (event: {to, content, metadata?}, ctx: {channelId, accountId?, conversationId?})
+ *   => {content?, cancel?} | void
  */
-function handleMessageSending(message: unknown): unknown {
-  if (!state) return message;
+function handleMessageSending(
+  event: { to: string; content: string; metadata?: Record<string, unknown> },
+  _ctx: { channelId: string; accountId?: string; conversationId?: string }
+): { content?: string; cancel?: boolean } | void {
+  if (!state) return;
 
-  if (typeof message === "string") {
-    let result = scrubText(message, state.scrubRules);
-    for (const [toolName, cred] of state.credentialCache.entries()) {
-      result = scrubLiteralCredential(result, cred, toolName);
+  let content = event.content;
+  if (typeof content === "string") {
+    content = scrubText(content, state.scrubRules);
+    for (const [_toolName, cred] of state.credentialCache.entries()) {
+      content = scrubLiteralCredential(content, cred, _toolName);
     }
-    return result;
+    if (content !== event.content) {
+      return { content };
+    }
   }
-
-  return scrubObject(message, state.scrubRules);
 }
 
 /**
  * after_compaction handler (Phase 3C): log that compaction occurred with scrubbing active.
+ *
+ * OpenClaw API signature:
+ *   (event: {messageCount, tokenCount?, compactedCount, sessionFile?}, ctx: PluginHookAgentContext)
+ *   => void
  */
-function handleAfterCompaction(event: unknown): void {
+function handleAfterCompaction(
+  _event: { messageCount: number; tokenCount?: number; compactedCount: number; sessionFile?: string },
+  _ctx: { agentId?: string; sessionKey?: string; sessionId?: string; workspaceDir?: string; messageProvider?: string; trigger?: string; channelId?: string }
+): void {
   if (!state) return;
 
   logCompactionEvent({
@@ -519,8 +568,15 @@ function handleAfterCompaction(event: unknown): void {
 
 /**
  * gateway_start handler (Phase 3C): validate vault accessibility + rotation check + cache warm.
+ *
+ * OpenClaw API signature:
+ *   (event: {port}, ctx: {port?})
+ *   => void
  */
-async function handleGatewayStart(): Promise<void> {
+async function handleGatewayStart(
+  _event: { port: number },
+  _ctx: { port?: number }
+): Promise<void> {
   if (!state) {
     console.log("[vault] Vault not initialized — skipping gateway_start checks");
     return;

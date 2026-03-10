@@ -44,6 +44,9 @@
     "argon2": "^0.41.1",
     "yaml": "^2.7.0"
   },
+  "peerDependencies": {
+    "openclaw": ">=2026.3.0"
+  },
   "devDependencies": {
     "typescript": "^5.7.0",
     "vitest": "^3.0.0",

@@ -171,21 +171,43 @@ export interface AgentToolDef {
   }>;
 }
 
-/** Plugin API interface (subset we use) */
+/** Plugin API interface (subset we use — matches OpenClawPluginApi) */
 export interface PluginApi {
+  id: string;
+  name: string;
+  version?: string;
+  description?: string;
+  source: string;
+  config: Record<string, unknown>;
+  pluginConfig?: Record<string, unknown>;
+  runtime: Record<string, unknown>;
+  logger: {
+    debug?: (message: string) => void;
+    info: (message: string) => void;
+    warn: (message: string) => void;
+    error: (message: string) => void;
+  };
   on(
     hook: string,
     handler: (...args: any[]) => any,
     options?: { priority?: number }
   ): void;
   registerCli(
-    fn: (ctx: { program: CliProgram }) => void,
-    options?: { commands: string[] }
+    fn: (ctx: { program: CliProgram; config: Record<string, unknown>; workspaceDir?: string; logger: Record<string, unknown> }) => void,
+    options?: { commands?: string[] }
   ): void;
   registerTool(
-    tool: AgentToolDef | ((ctx: unknown) => AgentToolDef | null),
+    tool: AgentToolDef | ((ctx: unknown) => AgentToolDef | AgentToolDef[] | null | undefined),
     options?: { name?: string; names?: string[]; optional?: boolean }
   ): void;
+  registerHook(
+    events: string | string[],
+    handler: (...args: any[]) => any,
+    opts?: { entry?: unknown; name?: string; description?: string; register?: boolean }
+  ): void;
+  registerHttpRoute(params: Record<string, unknown>): void;
+  registerCommand(command: Record<string, unknown>): void;
+  resolvePath(input: string): string;
 }
 
 /** CLI program interface (Commander-like) */
