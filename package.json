@@ -4,14 +4,41 @@
   "description": "OpenClaw credential vault plugin — encrypts, injects, and scrubs external tool credentials",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist/",
+    "openclaw.plugin.json",
+    "resolver/openclaw-vault-resolver",
+    "resolver/Cargo.toml",
+    "resolver/src/",
+    "tools/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "build:resolver": "cd resolver && cargo build --release --target x86_64-unknown-linux-musl",
+    "postinstall": "echo '⚠️  Run: openclaw vault init — to set up your vault'",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:resolver": "cd resolver && cargo test",
     "test:cross": "vitest run tests/cross-compat.test.ts",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "openclaw",
+    "plugin",
+    "credential",
+    "vault",
+    "secrets",
+    "encryption"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/openclaw/credential-vault.git"
+  },
+  "bugs": {
+    "url": "https://github.com/openclaw/credential-vault/issues"
   },
   "dependencies": {
     "argon2": "^0.41.1",
