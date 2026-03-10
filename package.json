@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "OpenClaw credential vault plugin — encrypts, injects, and scrubs external tool credentials",
   "main": "dist/index.js",
+  "openclaw": {
+    "extensions": ["./dist/index.js"]
+  },
   "types": "dist/index.d.ts",
   "files": [
     "dist/",
