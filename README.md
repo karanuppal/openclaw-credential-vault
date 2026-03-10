@@ -306,3 +306,35 @@ npm pack --dry-run
 ## License
 
 MIT
+
+## ⚠️ Security: Migration from Plaintext
+
+**CRITICAL:** Never migrate existing plaintext credentials through an AI agent (e.g., `vault add --key "your-secret"`). The agent sees the plaintext in its context window — the credential is effectively leaked.
+
+### Correct migration flow:
+
+1. **Generate a new credential** (in your browser/dashboard — not through the agent)
+2. **Add it to the vault directly in your terminal:**
+   ```bash
+   openclaw vault add <name> --key "<new-credential>" --yes
+   ```
+3. **Revoke the old credential** in the service's dashboard
+4. **Delete any plaintext files** that had the old credential
+
+### Why?
+
+When an AI agent reads a credential (via `cat`, `echo`, file reads, etc.), that plaintext enters the LLM context. Even if you immediately encrypt it into the vault, the plaintext was processed by the model. Treat any credential that has passed through an AI agent as compromised.
+
+### For existing users migrating to the vault:
+
+```bash
+# ❌ WRONG — agent sees the credential
+cat ~/.my-api-token | openclaw vault add myservice --key "$(cat ~/.my-api-token)"
+
+# ✅ RIGHT — rotate first, add new token in terminal
+# 1. Generate new token in service dashboard
+# 2. In YOUR terminal (not the agent):
+openclaw vault add myservice --key "new-token-from-dashboard" --yes
+# 3. Revoke old token in service dashboard
+# 4. Delete plaintext file
+```
