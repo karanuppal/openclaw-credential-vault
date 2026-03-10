@@ -64,11 +64,30 @@ function getPassphrase(vaultDir: string): string {
   return getMachinePassphrase(meta?.installTimestamp);
 }
 
+let _promptUserOverride: ((question: string) => Promise<string>) | null = null;
+
+/**
+ * Replace the promptUser function for testing.
+ */
+export function setPromptUser(fn: (question: string) => Promise<string>): void {
+  _promptUserOverride = fn;
+}
+
+/**
+ * Reset promptUser to default implementation.
+ */
+export function resetPromptUser(): void {
+  _promptUserOverride = null;
+}
+
 /**
  * Prompt the user for a line of input via stdin/stdout.
  * Returns the trimmed response. Exported for testing.
  */
 export function promptUser(question: string): Promise<string> {
+  if (_promptUserOverride) {
+    return _promptUserOverride(question);
+  }
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
