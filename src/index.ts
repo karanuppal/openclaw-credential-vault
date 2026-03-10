@@ -57,6 +57,8 @@ interface VaultState {
     command: string;
     startTime: number;
   }>;
+  /** Track env vars injected into process.env for cleanup after tool call */
+  injectedEnvVars: string[];
 }
 
 let state: VaultState | null = null;
@@ -94,6 +96,7 @@ function loadState(): VaultState | null {
     resolverPath: config.resolverPath,
     credentialCache: new Map(),
     currentInjections: [],
+    injectedEnvVars: [],
   };
 }
 
@@ -361,6 +364,12 @@ async function handleBeforeToolCall(
         for (const [envKey, envVal] of Object.entries(rule.env)) {
           const resolved = await resolveVaultRef(envVal, state, toolName, cmdStr);
           existingEnv[envKey] = resolved;
+          // Also set on process.env so child processes inherit immediately
+          // (params.env may not be applied by the exec tool for hook-injected values)
+          process.env[envKey] = resolved;
+          // Track for cleanup after tool call
+          if (!state.injectedEnvVars) state.injectedEnvVars = [];
+          state.injectedEnvVars.push(envKey);
         }
         params.env = existingEnv;
 
@@ -430,6 +439,14 @@ function handleAfterToolCall(
     }, state.vaultDir);
   }
   state.currentInjections = [];
+
+  // Clean up injected env vars from process.env
+  if (state.injectedEnvVars && state.injectedEnvVars.length > 0) {
+    for (const envKey of state.injectedEnvVars) {
+      delete process.env[envKey];
+    }
+    state.injectedEnvVars = [];
+  }
 }
 
 /**
