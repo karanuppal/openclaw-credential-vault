@@ -30,6 +30,11 @@ import {
   KNOWN_TOOLS,
 } from "./registry.js";
 import { compileScrubRules, scrubText } from "./scrubber.js";
+import {
+  guessCredentialFormat,
+  formatGuessDisplay,
+  buildToolConfigFromGuess,
+} from "./guesser.js";
 import { ToolConfig, CliProgram } from "./types.js";
 
 /**
@@ -97,33 +102,38 @@ export function registerCliCommands(program: CliProgram): void {
       const config = readConfig(vaultDir);
       const passphrase = getPassphrase(vaultDir);
 
-      // Auto-detect credential type
-      const detected = detectCredentialType(options.key);
-      if (detected && detected.toolName !== tool) {
-        console.log(`ℹ Detected ${detected.displayName} — storing as "${tool}"`);
-      } else if (detected) {
-        console.log(`✓ Detected: ${detected.displayName}`);
+      // ── Phase 3A: Credential Format Guessing ──
+      const guess = guessCredentialFormat(options.key, tool);
+
+      // Display detection result
+      console.log("");
+      console.log(formatGuessDisplay(guess, tool));
+
+      // If known tool was detected with a different name, inform user
+      if (guess.knownToolName && guess.knownToolName !== tool) {
+        console.log(`\n  ℹ This looks like a ${guess.knownToolName} credential — storing as "${tool}"`);
       }
 
       // Encrypt and store
       const filePath = await writeCredentialFile(vaultDir, tool, options.key, passphrase);
-      console.log(`✓ Credential stored: ${tool} (AES-256-GCM encrypted)`);
+      console.log(`\n✓ Credential stored: ${tool} (AES-256-GCM encrypted)`);
 
-      // Set up injection and scrubbing rules
-      const knownTool = getKnownTool(tool);
+      // Build tool config from guess
+      const { inject, scrub } = buildToolConfigFromGuess(tool, guess);
       const now = new Date().toISOString();
 
-      let toolConfig: ToolConfig;
-      if (knownTool) {
-        toolConfig = {
-          name: tool,
-          addedAt: now,
-          lastRotated: now,
-          inject: knownTool.inject,
-          scrub: knownTool.scrub,
-        };
+      const toolConfig: ToolConfig = {
+        name: tool,
+        addedAt: now,
+        lastRotated: now,
+        inject,
+        scrub,
+      };
+
+      // Display what was configured
+      if (inject.length > 0) {
         console.log("✓ Injection configured:");
-        for (const rule of knownTool.inject) {
+        for (const rule of inject) {
           if (rule.commandMatch) {
             console.log(`    ${rule.tool} commands matching: ${rule.commandMatch}`);
           }
@@ -131,29 +141,20 @@ export function registerCliCommands(program: CliProgram): void {
             console.log(`    ${rule.tool} URLs matching: ${rule.urlMatch}`);
           }
         }
-        console.log(
-          `✓ Scrubbing patterns registered: ${knownTool.scrub.patterns.join(", ")}`
-        );
-      } else {
-        // Unknown tool: generate basic rules
-        const scrubPattern = generateScrubPattern(options.key);
-        toolConfig = {
-          name: tool,
-          addedAt: now,
-          lastRotated: now,
-          inject: [
-            {
-              tool: "exec",
-              commandMatch: `${tool}*|curl*${tool}*`,
-              env: { [`${tool.toUpperCase().replace(/-/g, "_")}_API_KEY`]: `$vault:${tool}` },
-            },
-          ],
-          scrub: {
-            patterns: [scrubPattern],
-          },
-        };
-        console.log(`⚠ Unknown tool "${tool}" — generated default injection rules`);
-        console.log(`  Scrubbing pattern: ${scrubPattern}`);
+      }
+      if (scrub.patterns.length > 0) {
+        console.log(`✓ Scrubbing patterns registered: ${scrub.patterns.join(", ")}`);
+      }
+
+      // Show prompt hints for interactive use (non-blocking info)
+      if (guess.needsPrompt) {
+        console.log("");
+        if (guess.promptHints.askApiUrl) {
+          console.log("  💡 Tip: Re-run with API URL context for better injection rules");
+        }
+        if (guess.promptHints.askCliTool) {
+          console.log("  💡 Tip: If there's a CLI tool, update commandMatch in tools.yaml");
+        }
       }
 
       const updatedConfig = upsertTool(config, toolConfig);
