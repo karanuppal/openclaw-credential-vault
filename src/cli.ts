@@ -731,8 +731,8 @@ export function registerCliCommands(program: CliProgram): void {
       }
 
       // Post-rotation security checklist
-      const toolConfig = updatedConfig.tools[tool];
-      const revokeUrl = toolConfig?.rotation?.revokeUrl;
+      const rotatedToolConfig = updatedConfig.tools[tool];
+      const revokeUrl = rotatedToolConfig?.rotation?.revokeUrl;
       console.log("");
       console.log("⚠ Post-rotation checklist:");
       console.log("  1. Revoke the old token in the service dashboard");
