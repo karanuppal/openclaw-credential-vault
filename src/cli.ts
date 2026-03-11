@@ -309,23 +309,34 @@ export function registerCliCommands(program: CliProgram): void {
     .action(async () => {
       const vaultDir = getVaultDir();
 
-      if (fs.existsSync(path.join(vaultDir, "tools.yaml"))) {
-        console.log("⚠ Vault already initialized at", vaultDir);
-        console.log("  Use 'vault add' to add credentials.");
+      const alreadyInitialized = fs.existsSync(path.join(vaultDir, "tools.yaml"));
+      const uid = process.getuid?.() ?? -1;
+      const isRoot = uid === 0;
+
+      if (alreadyInitialized && !isRoot) {
+        console.log("✓ Vault already initialized at", vaultDir);
+        const config = readConfig(vaultDir);
+        if (config.resolverMode !== "binary") {
+          console.log("  Currently using inline decryption mode.");
+          console.log("  Run 'sudo openclaw vault init' to upgrade to OS-level credential isolation.");
+        }
         return;
       }
 
-      initConfig(vaultDir, "machine");
-      console.log(`✓ Vault initialized at ${vaultDir}`);
-      console.log(`  Master key mode: machine`);
+      if (!alreadyInitialized) {
+        initConfig(vaultDir, "machine");
+        console.log(`✓ Vault initialized at ${vaultDir}`);
+        console.log(`  Master key mode: machine`);
+      } else {
+        console.log(`✓ Vault already initialized at ${vaultDir}`);
+      }
 
-      // If running as root, also set up the Rust resolver for OS-level isolation
-      const uid = process.getuid?.() ?? -1;
-      if (uid === 0) {
+      // Set up the Rust resolver for OS-level isolation when running as root
+      if (isRoot) {
         console.log("\nRunning as root — setting up resolver for OS-level credential isolation...\n");
         await setupResolverInternal(vaultDir);
       } else {
-        console.log("\n  Tip: Run 'sudo openclaw vault init' to also set up OS-level credential isolation.");
+        console.log("\n  Tip: Run 'sudo openclaw vault init' to upgrade to OS-level credential isolation.");
       }
 
       console.log("\n  Use 'openclaw vault add <tool> --key <credential>' to add credentials.");
