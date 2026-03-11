@@ -9,10 +9,8 @@
   "types": "dist/index.d.ts",
   "files": [
     "dist/",
+    "bin/",
     "openclaw.plugin.json",
-    "resolver/openclaw-vault-resolver",
-    "resolver/Cargo.toml",
-    "resolver/src/",
     "tools/",
     "README.md",
     "LICENSE"

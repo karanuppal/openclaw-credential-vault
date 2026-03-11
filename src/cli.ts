@@ -854,14 +854,20 @@ export function registerCliCommands(program: CliProgram): void {
   async function setupResolverInternal(vaultDir: string) {
     const config = readConfig(vaultDir);
 
-    // Find the resolver binary
-    const devBinaryPaths = [
+    // Find the resolver binary — shipped pre-built for supported platforms
+    const platform = process.platform === "linux" ? "linux" : process.platform === "darwin" ? "darwin" : null;
+    const arch = process.arch === "x64" ? "x64" : process.arch === "arm64" ? "arm64" : null;
+
+    const searchPaths = [
+      // Pre-built binary shipped with the package
+      ...(platform && arch ? [path.join(__dirname, "..", "bin", `${platform}-${arch}`, "openclaw-vault-resolver")] : []),
+      // Dev build paths (for development)
       path.join(__dirname, "..", "resolver", "target", "release", "openclaw-vault-resolver"),
       path.join(__dirname, "..", "resolver", "target", "x86_64-unknown-linux-musl", "release", "openclaw-vault-resolver"),
     ];
 
     let sourceBinary: string | null = null;
-    for (const p of devBinaryPaths) {
+    for (const p of searchPaths) {
       if (fs.existsSync(p)) {
         sourceBinary = p;
         break;
@@ -869,29 +875,11 @@ export function registerCliCommands(program: CliProgram): void {
     }
 
     if (!sourceBinary) {
-      // Try to build automatically if cargo is available
-      const resolverDir = path.join(__dirname, "..", "resolver");
-      if (fs.existsSync(path.join(resolverDir, "Cargo.toml"))) {
-        try {
-          const { execSync: execSyncBuild } = await import("node:child_process");
-          console.log("Building resolver binary...");
-          execSyncBuild("cargo build --release", { cwd: resolverDir, stdio: "inherit" });
-          const builtPath = path.join(resolverDir, "target", "release", "openclaw-vault-resolver");
-          if (fs.existsSync(builtPath)) {
-            sourceBinary = builtPath;
-            console.log("✓ Resolver binary built successfully");
-          }
-        } catch {
-          // cargo not available or build failed — fall through to inline mode
-        }
-      }
-
-      if (!sourceBinary) {
-        console.log("ℹ Resolver binary not available — using inline decryption mode.");
-        console.log("  Credentials are still AES-256-GCM encrypted at rest.");
-        console.log("  OS-level user separation requires the Rust resolver (install cargo to enable).");
-        return;
-      }
+      const platformLabel = platform && arch ? `${platform}-${arch}` : `${process.platform}-${process.arch}`;
+      console.log(`ℹ No resolver binary available for ${platformLabel} — using inline decryption mode.`);
+      console.log("  Credentials are still AES-256-GCM encrypted at rest.");
+      console.log("  OS-level user separation will be available when your platform is supported.");
+      return;
     }
 
     const { execSync } = await import("node:child_process");
