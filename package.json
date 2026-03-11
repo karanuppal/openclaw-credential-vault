@@ -18,7 +18,7 @@
   "scripts": {
     "build": "tsc",
     "build:resolver": "cd resolver && cargo build --release --target x86_64-unknown-linux-musl",
-    "postinstall": "echo '⚠️  Run: openclaw vault init — to set up your vault'",
+    "postinstall": "node -e \"const p=require('path').resolve(__dirname,'bin','vault-setup.sh'); console.log('\\n✓ Credential Vault installed\\n\\nComplete setup:\\n  sudo bash '+p+'\\n  openclaw doctor fix\\n')\"",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:resolver": "cd resolver && cargo test",

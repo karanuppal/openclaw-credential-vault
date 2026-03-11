@@ -10,20 +10,16 @@ openclaw plugins install @openclaw/credential-vault
 
 ## Setup
 
+After installation, the plugin prints two commands. Run them:
+
 ```bash
-# Step 1: Initialize the vault (prints the setup command with the full path)
-openclaw vault init
-
-# Step 2: Run the setup command printed by vault init (copy-paste it)
-sudo bash /path/to/vault-setup.sh    # ← vault init prints the exact path
-
-# Step 3: Restart the gateway
+sudo bash /path/to/vault-setup.sh    # ← printed after install, copy-paste it
 openclaw doctor fix
 ```
 
-The setup script handles everything — vault initialization, system user creation, binary installation, credential migration, and config updates. If you already ran `vault init`, the setup script picks up where it left off.
+That's it. The setup script handles everything — vault initialization, encryption setup, system user creation, binary installation, and config updates.
 
-**Run the setup script.** It creates a dedicated system user so the AI agent physically cannot read your credential files. Without it, credentials are encrypted but the agent runs as the same OS user — a gap we don't want in production.
+**Why sudo?** The script creates a dedicated `openclaw-vault` system user (like `postgres` or `docker`) so the AI agent physically cannot read your credential files. This is a one-time operation. After setup, everything runs without elevated privileges.
 
 ## Add Credentials
 
