@@ -43,12 +43,22 @@ If you can't use sudo, run `openclaw vault init` for inline-only mode. Credentia
 |---------|-------------|
 | `vault init` | Initialize vault (inline mode, no sudo needed) |
 | `vault add <tool> --key <cred>` | Add a credential |
+| `vault add <tool> --type browser-password --domain <d> --key <p>` | Add a browser password (auto-filled on domain) |
+| `vault add <tool> --type browser-cookie --domain <d>` | Add browser cookies (paste JSON or Netscape format) |
 | `vault list` | Show all stored credentials |
 | `vault show <tool>` | Show credential details |
-| `vault rotate <tool> --key <new>` | Rotate a credential |
-| `vault remove <tool>` | Remove a credential |
 | `vault test <tool>` | Verify injection and scrubbing |
+| `vault rotate <tool> --key <new>` | Rotate a credential |
+| `vault rotate --check` | Show overdue rotations |
+| `vault rotate --all` | Emergency mass rotation walkthrough |
+| `vault remove <tool>` | Remove credential (keeps scrub patterns) |
+| `vault remove <tool> --purge` | Fully remove credential + config |
 | `vault audit` | Check permissions, rotation age, security |
+| `vault logs` | View audit log (credential access + scrubbing events) |
+| `vault logs --stats` | Aggregate access/scrub statistics |
+| `vault logs --tool <name>` | Filter log by tool |
+| `vault logs --last <duration>` | Filter by time window (e.g. `24h`, `7d`, `30m`) |
+| `vault logs --json` | Raw JSONL output |
 
 ## Platform Support
 

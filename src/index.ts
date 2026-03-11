@@ -413,19 +413,6 @@ async function handleBeforeToolCall(
     }
   }
 
-  // DEBUG: Log what we're returning
-  if (state.currentInjections.length > 0) {
-    const fs = await import("node:fs");
-    const envKeys = params.env ? Object.keys(params.env as Record<string, string>) : [];
-    fs.appendFileSync("/tmp/vault-debug.log",
-      `[${new Date().toISOString()}] before_tool_call returning params with env keys: ${envKeys.join(", ")}\n` +
-      `  toolName: ${event.toolName}\n` +
-      `  command: ${String(params.command ?? "N/A").substring(0, 80)}\n` +
-      `  injections: ${state.currentInjections.length}\n` +
-      `  env token length: ${String((params.env as any)?.GITHUB_TOKEN ?? "").length}\n\n`
-    );
-  }
-
   return { params };
 }
 
