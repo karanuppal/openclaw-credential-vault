@@ -3,7 +3,7 @@
 # OpenClaw Credential Vault — One-Line Installer
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/opscontrol711/openclaw-credential-vault/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/karanuppal/openclaw-credential-vault/main/install.sh | bash
 #
 # What it does:
 #   1. Installs the plugin via openclaw plugins install
