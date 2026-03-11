@@ -206,14 +206,29 @@ export function getOverdueCredentials(
  */
 export function signalGatewayReload(): boolean {
   try {
+    // Try PID file first
     const pidFile = path.join(
       process.env.HOME ?? "~",
       ".openclaw",
       "gateway.pid"
     );
-    if (!fs.existsSync(pidFile)) return false;
-    const pid = parseInt(fs.readFileSync(pidFile, "utf8").trim(), 10);
-    if (isNaN(pid)) return false;
+    let pid: number | undefined;
+    if (fs.existsSync(pidFile)) {
+      pid = parseInt(fs.readFileSync(pidFile, "utf8").trim(), 10);
+      if (isNaN(pid)) pid = undefined;
+    }
+    // Fallback: find gateway via pgrep (common when running under systemd)
+    if (!pid) {
+      try {
+        const { execSync } = require("node:child_process");
+        const result = execSync("pgrep -f openclaw-gateway", { encoding: "utf8", timeout: 3000 }).trim();
+        const pids = result.split("\n").map((s: string) => parseInt(s, 10)).filter((n: number) => !isNaN(n));
+        if (pids.length > 0) pid = pids[0];
+      } catch {
+        // pgrep not found or no process — fall through
+      }
+    }
+    if (!pid) return false;
     process.kill(pid, "SIGUSR2");
     return true;
   } catch {

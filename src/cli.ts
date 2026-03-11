@@ -46,6 +46,37 @@ import {
 import { ToolConfig, CliProgram, PlaywrightCookie } from "./types.js";
 
 /**
+ * Validate a tool name for safety and filesystem compatibility.
+ * Rejects path traversal, slashes, and other dangerous characters.
+ * Returns an error message if invalid, or null if valid.
+ */
+function validateToolName(tool: string): string | null {
+  if (!tool || tool.trim().length === 0) {
+    return "Tool name cannot be empty.";
+  }
+  if (tool.includes("/") || tool.includes("\\")) {
+    return `Invalid tool name "${tool}": slashes are not allowed (path traversal risk).`;
+  }
+  if (tool.startsWith(".")) {
+    return `Invalid tool name "${tool}": cannot start with a dot (path traversal risk).`;
+  }
+  if (tool.includes("..")) {
+    return `Invalid tool name "${tool}": cannot contain ".." (path traversal risk).`;
+  }
+  if (/[<>:"|?*\x00-\x1f]/.test(tool)) {
+    return `Invalid tool name "${tool}": contains disallowed characters.`;
+  }
+  if (tool.length > 64) {
+    return `Invalid tool name "${tool}": too long (max 64 characters).`;
+  }
+  // Allow: alphanumeric, hyphens, underscores
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(tool)) {
+    return `Invalid tool name "${tool}": must start with alphanumeric and contain only letters, numbers, hyphens, underscores, and dots.`;
+  }
+  return null;
+}
+
+/**
  * Get the master passphrase for encryption/decryption.
  */
 function getPassphrase(vaultDir: string): string {
@@ -354,6 +385,13 @@ export function registerCliCommands(program: CliProgram): void {
     .option("--domain <domain>", "Domain pin (required for browser-cookie/browser-password, e.g. .amazon.com)")
     .option("--yes", "Skip confirmation prompt (accept defaults)")
     .action(async (tool: string, options: { key?: string; type?: string; domain?: string; yes?: boolean }) => {
+      // Validate tool name
+      const nameError = validateToolName(tool);
+      if (nameError) {
+        console.error(`Error: ${nameError}`);
+        return;
+      }
+
       // Route to browser-cookie handler
       if (options.type === "browser-cookie") {
         await handleBrowserCookieAdd(tool, options.domain);
@@ -374,6 +412,19 @@ export function registerCliCommands(program: CliProgram): void {
       const vaultDir = getVaultDir();
       const config = readConfig(vaultDir);
       const passphrase = getPassphrase(vaultDir);
+
+      // Check for existing credential
+      if (config.tools[tool]) {
+        if (!options.yes) {
+          const answer = await promptUser(`⚠ Tool "${tool}" already exists. Overwrite? [y/N] `);
+          if (answer.toLowerCase() !== "y" && answer.toLowerCase() !== "yes") {
+            console.log("Aborted. Use 'vault rotate' to update an existing credential.");
+            return;
+          }
+        } else {
+          console.log(`⚠ Overwriting existing credential: ${tool}`);
+        }
+      }
 
       // ── Phase 3A: Credential Format Guessing ──
       const guess = guessCredentialFormat(options.key, tool);
@@ -514,6 +565,8 @@ export function registerCliCommands(program: CliProgram): void {
     .description("Show details for a specific tool")
     .argument("<tool>", "Tool name")
     .action(async (tool: string) => {
+      const nameErr = validateToolName(tool);
+      if (nameErr) { console.error(`Error: ${nameErr}`); return; }
       const vaultDir = getVaultDir();
       const config = readConfig(vaultDir);
       const toolConfig = config.tools[tool];
@@ -709,6 +762,9 @@ export function registerCliCommands(program: CliProgram): void {
         return;
       }
 
+      const nameErr = validateToolName(tool);
+      if (nameErr) { console.error(`Error: ${nameErr}`); return; }
+
       if (!options.key) {
         console.error("Error: --key is required for rotation.");
         return;
@@ -768,6 +824,8 @@ export function registerCliCommands(program: CliProgram): void {
     .argument("<tool>", "Tool name")
     .option("--purge", "Also remove scrubbing patterns (not recommended)")
     .action(async (tool: string, options: { purge?: boolean }) => {
+      const nameErr = validateToolName(tool);
+      if (nameErr) { console.error(`Error: ${nameErr}`); return; }
       const vaultDir = getVaultDir();
       const config = readConfig(vaultDir);
 
@@ -805,6 +863,8 @@ export function registerCliCommands(program: CliProgram): void {
     .description("Simulate a tool call and verify injection + scrubbing")
     .argument("<tool>", "Tool name")
     .action(async (tool: string) => {
+      const nameErr = validateToolName(tool);
+      if (nameErr) { console.error(`Error: ${nameErr}`); return; }
       const vaultDir = getVaultDir();
       const config = readConfig(vaultDir);
       const toolConfig = config.tools[tool];
