@@ -200,6 +200,7 @@ async function handleBeforeToolCall(
   event: { toolName: string; params: Record<string, unknown>; runId?: string; toolCallId?: string },
   _ctx: { agentId?: string; sessionKey?: string; sessionId?: string; runId?: string; toolName: string; toolCallId?: string }
 ): Promise<{ params?: Record<string, unknown>; block?: boolean; blockReason?: string } | void> {
+  try {
   if (!state) return;
 
   const toolName = event.toolName;
@@ -414,6 +415,13 @@ async function handleBeforeToolCall(
   }
 
   return { params };
+  } catch (err: unknown) {
+    // Log errors — gateway may deregister hooks on unhandled exceptions
+    const errFs = require("node:fs");
+    errFs.appendFileSync("/tmp/vault-hook-error.log",
+      `[${new Date().toISOString()}] handleBeforeToolCall ERROR: ${(err as Error).message}\n${(err as Error).stack}\n\n`);
+    return;
+  }
 }
 
 /**
