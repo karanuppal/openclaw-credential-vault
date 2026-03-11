@@ -159,7 +159,28 @@ export function matchesCommand(
   commandMatch: string
 ): boolean {
   const regex = globToRegex(commandMatch);
-  return regex.test(command);
+  // Test the full command first (fast path for simple commands)
+  if (regex.test(command)) return true;
+  // Extract all testable segments from the command:
+  // 1. Split on newlines, discard comments and empty lines
+  // 2. Split each line on ;/&&/|| to get individual commands
+  // This handles: "# comment\necho hi; gh auth status 2>&1 && echo done"
+  const lines = command.split("\n")
+    .map(l => l.trim())
+    .filter(l => l.length > 0 && !l.startsWith("#"));
+  const segments: string[] = [];
+  for (const line of lines) {
+    // Test the full line first
+    segments.push(line);
+    // Also split on compound operators if present
+    if (/[;&|]{1,2}/.test(line)) {
+      const parts = line.split(/\s*(?:&&|\|\||;)\s*/)
+        .map(s => s.trim())
+        .filter(s => s.length > 0);
+      segments.push(...parts);
+    }
+  }
+  return segments.some(seg => regex.test(seg));
 }
 
 /**
