@@ -1043,7 +1043,7 @@ export function registerCliCommands(program: CliProgram): void {
         const ts = new Date(event.timestamp).toLocaleString();
         switch (event.type) {
           case "credential_access":
-            console.log(`[${ts}] ACCESS ${event.credential} via ${event.tool} (${event.injectionType}) — ${event.command.substring(0, 60)}`);
+            console.log(`[${ts}] ACCESS ${event.credential} via ${event.tool} (${event.injectionType}) — ${event.command}`);
             break;
           case "scrub":
             console.log(`[${ts}] SCRUB  ${event.credential} in ${event.hook} (${event.replacements} replacement${event.replacements > 1 ? "s" : ""})`);
