@@ -869,10 +869,29 @@ export function registerCliCommands(program: CliProgram): void {
     }
 
     if (!sourceBinary) {
-      console.log("ℹ Resolver binary not found — skipping OS-level isolation setup.");
-      console.log("  Build it with: cd resolver && cargo build --release --target x86_64-unknown-linux-musl");
-      console.log("  Then re-run: sudo openclaw vault init");
-      return;
+      // Try to build automatically if cargo is available
+      const resolverDir = path.join(__dirname, "..", "resolver");
+      if (fs.existsSync(path.join(resolverDir, "Cargo.toml"))) {
+        try {
+          const { execSync: execSyncBuild } = await import("node:child_process");
+          console.log("Building resolver binary...");
+          execSyncBuild("cargo build --release", { cwd: resolverDir, stdio: "inherit" });
+          const builtPath = path.join(resolverDir, "target", "release", "openclaw-vault-resolver");
+          if (fs.existsSync(builtPath)) {
+            sourceBinary = builtPath;
+            console.log("✓ Resolver binary built successfully");
+          }
+        } catch {
+          // cargo not available or build failed — fall through to inline mode
+        }
+      }
+
+      if (!sourceBinary) {
+        console.log("ℹ Resolver binary not available — using inline decryption mode.");
+        console.log("  Credentials are still AES-256-GCM encrypted at rest.");
+        console.log("  OS-level user separation requires the Rust resolver (install cargo to enable).");
+        return;
+      }
     }
 
     const { execSync } = await import("node:child_process");
