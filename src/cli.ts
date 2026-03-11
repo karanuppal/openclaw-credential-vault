@@ -347,7 +347,7 @@ export function registerCliCommands(program: CliProgram): void {
 
       // Already fully set up
       if (alreadyInitialized && config?.resolverMode === "binary") {
-        console.log(`✓ Vault initialized at ${vaultDir}`);
+        console.log(`✓ Vault already initialized at ${vaultDir}`);
         console.log("  Mode: binary resolver (OS-level isolation active)");
         console.log("\nUse 'openclaw vault add <tool> --key <credential>' to add credentials.");
         return;
