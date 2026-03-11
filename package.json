@@ -1,5 +1,5 @@
 {
-  "name": "@openclaw/credential-vault",
+  "name": "openclaw-credential-vault",
   "version": "0.1.0",
   "description": "OpenClaw credential vault plugin — encrypts, injects, and scrubs external tool credentials",
   "main": "dist/index.js",
