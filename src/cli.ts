@@ -337,15 +337,23 @@ export function registerCliCommands(program: CliProgram): void {
       }
 
       // Step 2: Show setup script path for OS-level isolation upgrade
-      const setupScript = path.join(__dirname, "..", "bin", "vault-setup.sh");
+      const setupScript = path.resolve(path.join(__dirname, "..", "bin", "vault-setup.sh"));
       if (fs.existsSync(setupScript)) {
-        console.log("To enable OS-level credential isolation (recommended):");
-        console.log(`  sudo bash ${setupScript}\n`);
-        console.log("This creates a separate system user so the agent process cannot");
-        console.log("read credential files directly — even with exec access.\n");
+        console.log("┌─────────────────────────────────────────────────────────┐");
+        console.log("│  RECOMMENDED: Enable OS-level credential isolation      │");
+        console.log("│                                                         │");
+        console.log("│  This creates a separate system user so the AI agent    │");
+        console.log("│  cannot read credential files — even with exec access.  │");
+        console.log("│                                                         │");
+        console.log("│  Run this once:                                         │");
+        console.log(`│  sudo bash ${setupScript}`);
+        console.log("│                                                         │");
+        console.log("│  Then restart the gateway:                              │");
+        console.log("│  openclaw doctor fix                                    │");
+        console.log("└─────────────────────────────────────────────────────────┘");
       }
 
-      console.log("Use 'openclaw vault add <tool> --key <credential>' to add credentials.");
+      console.log("\nUse 'openclaw vault add <tool> --key <credential>' to add credentials.");
     });
 
   // vault add <tool>
