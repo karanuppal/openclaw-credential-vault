@@ -37,7 +37,26 @@ export function readConfig(vaultDir: string): VaultConfig {
     return { ...DEFAULT_CONFIG, tools: {} };
   }
   const raw = fs.readFileSync(configPath, "utf8");
-  const parsed = YAML.parse(raw);
+  let parsed: any;
+  try {
+    parsed = YAML.parse(raw);
+  } catch (yamlErr: unknown) {
+    // Corrupted YAML: try to recover from backup
+    const backupPath = configPath + ".bak";
+    if (fs.existsSync(backupPath)) {
+      try {
+        const backupRaw = fs.readFileSync(backupPath, "utf8");
+        parsed = YAML.parse(backupRaw);
+        // Restore from backup
+        fs.writeFileSync(configPath, backupRaw, "utf8");
+        console.error(`[vault] tools.yaml was corrupted — restored from backup`);
+      } catch {
+        throw yamlErr; // Backup also corrupted, throw original error
+      }
+    } else {
+      throw yamlErr;
+    }
+  }
   if (!parsed || typeof parsed !== "object") {
     return { ...DEFAULT_CONFIG, tools: {} };
   }
@@ -64,9 +83,17 @@ export function readConfig(vaultDir: string): VaultConfig {
 export function writeConfig(vaultDir: string, config: VaultConfig): void {
   const configPath = getConfigPath(vaultDir);
   fs.mkdirSync(vaultDir, { recursive: true });
+  // Keep a backup of the last known-good config for corruption recovery
+  if (fs.existsSync(configPath)) {
+    try { fs.copyFileSync(configPath, configPath + ".bak"); } catch { /* best-effort */ }
+  }
   const yamlStr = YAML.stringify(config, { indent: 2 });
-  fs.writeFileSync(configPath, yamlStr, "utf8");
-  fs.chmodSync(configPath, 0o600);
+  // Atomic write: write to temp file, then rename. Prevents corruption
+  // if the process crashes mid-write (rename is atomic on POSIX).
+  const tmpPath = configPath + ".tmp";
+  fs.writeFileSync(tmpPath, yamlStr, "utf8");
+  fs.chmodSync(tmpPath, 0o600);
+  fs.renameSync(tmpPath, configPath);
 }
 
 /**

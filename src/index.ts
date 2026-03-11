@@ -48,7 +48,7 @@ interface VaultState {
   /** Custom path to Rust resolver binary */
   resolverPath?: string;
   /** Cache of decrypted credentials to avoid repeated Argon2id derivation */
-  credentialCache: Map<string, string>;
+  credentialCache: Map<string, { value: string; cachedAt: number }>;
   /** Track which credentials were injected in the current tool call (for audit) */
   currentInjections: Array<{
     tool: string;
@@ -107,15 +107,22 @@ function loadState(): VaultState | null {
  *
  * On successful decrypt, adds the credential to the literal match set.
  */
+/** Credential cache TTL: 15 minutes. After this, credentials are re-decrypted. */
+const CACHE_TTL_MS = 15 * 60 * 1000;
+
 async function getCredential(
   toolName: string,
   st: VaultState,
   context?: string,
   command?: string
 ): Promise<string | null> {
-  if (st.credentialCache.has(toolName)) {
-    return st.credentialCache.get(toolName)!;
+  const cached = st.credentialCache.get(toolName);
+  if (cached && (Date.now() - cached.cachedAt) < CACHE_TTL_MS) {
+    return cached.value;
   }
+  // Evict expired entry
+  if (cached) st.credentialCache.delete(toolName);
+
   try {
     let cred: string | null;
 
@@ -134,7 +141,7 @@ async function getCredential(
     }
 
     if (cred) {
-      st.credentialCache.set(toolName, cred);
+      st.credentialCache.set(toolName, { value: cred, cachedAt: Date.now() });
       // Phase 3E: Add to literal match set for hash-based scrubbing
       addLiteralCredential(cred, toolName);
     }
@@ -176,7 +183,7 @@ function scrubWriteEditContent(
       let scrubbed = scrubText(value, st.scrubRules);
       // Also scrub literal cached credentials
       for (const [toolName, cred] of st.credentialCache.entries()) {
-        scrubbed = scrubLiteralCredential(scrubbed, cred, toolName);
+        scrubbed = scrubLiteralCredential(scrubbed, cred.value, toolName);
       }
       if (scrubbed !== value) {
         params = { ...params, [key]: scrubbed };
@@ -416,10 +423,18 @@ async function handleBeforeToolCall(
 
   return { params };
   } catch (err: unknown) {
-    // Log errors — gateway may deregister hooks on unhandled exceptions
-    const errFs = require("node:fs");
-    errFs.appendFileSync("/tmp/vault-hook-error.log",
-      `[${new Date().toISOString()}] handleBeforeToolCall ERROR: ${(err as Error).message}\n${(err as Error).stack}\n\n`);
+    // Log errors — gateway may deregister hooks on unhandled exceptions.
+    // Only write to disk if OPENCLAW_VAULT_DEBUG is set (avoid world-readable /tmp on shared machines).
+    if (process.env.OPENCLAW_VAULT_DEBUG) {
+      try {
+        const errFs = require("node:fs");
+        const logPath = require("node:path").join(
+          process.env.HOME ?? "/tmp", ".openclaw", "vault", "error.log"
+        );
+        errFs.appendFileSync(logPath,
+          `[${new Date().toISOString()}] handleBeforeToolCall ERROR: ${(err as Error).message}\n${(err as Error).stack}\n\n`);
+      } catch { /* ignore logging failures */ }
+    }
     return;
   }
 }
@@ -483,7 +498,7 @@ function handleToolResultPersist(
   if (scrubbed && typeof scrubbed.content === "string") {
     let content = scrubbed.content as string;
     for (const [toolName, cred] of state.credentialCache.entries()) {
-      content = scrubLiteralCredential(content, cred, toolName);
+      content = scrubLiteralCredential(content, cred.value, toolName);
     }
     scrubbed.content = content;
   }
@@ -493,7 +508,7 @@ function handleToolResultPersist(
       if (part && typeof part === "object" && typeof part.text === "string") {
         let text = part.text;
         for (const [toolName, cred] of state.credentialCache.entries()) {
-          text = scrubLiteralCredential(text, cred, toolName);
+          text = scrubLiteralCredential(text, cred.value, toolName);
         }
         part.text = text;
       }
@@ -526,7 +541,7 @@ function handleBeforeMessageWrite(
     const { text, replacements } = scrubTextWithTracking(content, state.scrubRules);
     content = text;
     for (const [toolName, cred] of state.credentialCache.entries()) {
-      content = scrubLiteralCredential(content, cred, toolName);
+      content = scrubLiteralCredential(content, cred.value, toolName);
     }
     for (const r of replacements) {
       logScrubEvent({
@@ -544,7 +559,7 @@ function handleBeforeMessageWrite(
       if (part && typeof part === "object" && typeof part.text === "string") {
         let text = part.text;
         for (const [toolName, cred] of state.credentialCache.entries()) {
-          text = scrubLiteralCredential(text, cred, toolName);
+          text = scrubLiteralCredential(text, cred.value, toolName);
         }
         part.text = text;
       }
@@ -571,7 +586,7 @@ function handleMessageSending(
   if (typeof content === "string") {
     content = scrubText(content, state.scrubRules);
     for (const [_toolName, cred] of state.credentialCache.entries()) {
-      content = scrubLiteralCredential(content, cred, _toolName);
+      content = scrubLiteralCredential(content, cred.value, _toolName);
     }
     if (content !== event.content) {
       return { content };
