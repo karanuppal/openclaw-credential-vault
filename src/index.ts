@@ -37,6 +37,23 @@ import {
   filterCookiesByDomain,
 } from "./browser.js";
 
+/**
+ * Safely log vault errors when OPENCLAW_VAULT_DEBUG is set.
+ * Writes to ~/.openclaw/vault/error.log (user-private) instead of /tmp.
+ */
+function logVaultError(hookName: string, err: unknown): void {
+  if (process.env.OPENCLAW_VAULT_DEBUG) {
+    try {
+      const errFs = require("node:fs");
+      const logPath = require("node:path").join(
+        process.env.HOME ?? "/tmp", ".openclaw", "vault", "error.log"
+      );
+      errFs.appendFileSync(logPath,
+        `[${new Date().toISOString()}] ${hookName} ERROR: ${(err as Error).message}\n${(err as Error).stack}\n\n`);
+    } catch { /* ignore logging failures */ }
+  }
+}
+
 /** In-memory state for the running plugin */
 interface VaultState {
   config: VaultConfig;
@@ -423,18 +440,7 @@ async function handleBeforeToolCall(
 
   return { params };
   } catch (err: unknown) {
-    // Log errors — gateway may deregister hooks on unhandled exceptions.
-    // Only write to disk if OPENCLAW_VAULT_DEBUG is set (avoid world-readable /tmp on shared machines).
-    if (process.env.OPENCLAW_VAULT_DEBUG) {
-      try {
-        const errFs = require("node:fs");
-        const logPath = require("node:path").join(
-          process.env.HOME ?? "/tmp", ".openclaw", "vault", "error.log"
-        );
-        errFs.appendFileSync(logPath,
-          `[${new Date().toISOString()}] handleBeforeToolCall ERROR: ${(err as Error).message}\n${(err as Error).stack}\n\n`);
-      } catch { /* ignore logging failures */ }
-    }
+    logVaultError("handleBeforeToolCall", err);
     return;
   }
 }
@@ -453,6 +459,7 @@ function handleAfterToolCall(
   event: { toolName: string; params: Record<string, unknown>; runId?: string; toolCallId?: string; result?: unknown; error?: string; durationMs?: number },
   _ctx: { agentId?: string; sessionKey?: string; sessionId?: string; runId?: string; toolName: string; toolCallId?: string }
 ): void {
+  try {
   if (!state) return;
 
   // Phase 3C: Audit logging for credential access events
@@ -476,6 +483,9 @@ function handleAfterToolCall(
     }
     state.injectedEnvVars = [];
   }
+  } catch (err: unknown) {
+    logVaultError("handleAfterToolCall", err);
+  }
 }
 
 /**
@@ -489,6 +499,7 @@ function handleToolResultPersist(
   event: { toolName?: string; toolCallId?: string; message: Record<string, unknown>; isSynthetic?: boolean },
   _ctx: { agentId?: string; sessionKey?: string; toolName?: string; toolCallId?: string }
 ): { message?: Record<string, unknown> } | void {
+  try {
   if (!state) return;
 
   // Deep-scrub the message object
@@ -516,6 +527,10 @@ function handleToolResultPersist(
   }
 
   return { message: scrubbed };
+  } catch (err: unknown) {
+    logVaultError("handleToolResultPersist", err);
+    return; // fail-open: let unscrubbed message through rather than crash the hook
+  }
 }
 
 /**
@@ -530,6 +545,7 @@ function handleBeforeMessageWrite(
   event: { message: Record<string, unknown>; sessionKey?: string; agentId?: string },
   _ctx: { agentId?: string; sessionKey?: string }
 ): { block?: boolean; message?: Record<string, unknown> } | void {
+  try {
   if (!state) return;
 
   const message = event.message;
@@ -567,6 +583,10 @@ function handleBeforeMessageWrite(
   }
 
   return { message: scrubbed };
+  } catch (err: unknown) {
+    logVaultError("handleBeforeMessageWrite", err);
+    return; // fail-open: let message through rather than crash the hook
+  }
 }
 
 /**
@@ -580,6 +600,7 @@ function handleMessageSending(
   event: { to: string; content: string; metadata?: Record<string, unknown> },
   _ctx: { channelId: string; accountId?: string; conversationId?: string }
 ): { content?: string; cancel?: boolean } | void {
+  try {
   if (!state) return;
 
   let content = event.content;
@@ -591,6 +612,10 @@ function handleMessageSending(
     if (content !== event.content) {
       return { content };
     }
+  }
+  } catch (err: unknown) {
+    logVaultError("handleMessageSending", err);
+    return; // fail-open: let message through rather than crash the hook
   }
 }
 

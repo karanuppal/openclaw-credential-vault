@@ -21,6 +21,9 @@ export function getAuditLogPath(vaultDir?: string): string {
 /**
  * Append an audit event to the log file (JSONL, append-only).
  */
+/** Max audit log size before rotation: 5 MB */
+const MAX_AUDIT_LOG_BYTES = 5 * 1024 * 1024;
+
 export function writeAuditEvent(event: AuditEvent, vaultDir?: string): void {
   const logPath = getAuditLogPath(vaultDir);
   const dir = path.dirname(logPath);
@@ -29,6 +32,18 @@ export function writeAuditEvent(event: AuditEvent, vaultDir?: string): void {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
+
+  // Rotate if log exceeds max size (keep one backup)
+  try {
+    if (fs.existsSync(logPath)) {
+      const stat = fs.statSync(logPath);
+      if (stat.size > MAX_AUDIT_LOG_BYTES) {
+        const backupPath = logPath + ".1";
+        try { fs.unlinkSync(backupPath); } catch { /* no old backup */ }
+        fs.renameSync(logPath, backupPath);
+      }
+    }
+  } catch { /* non-fatal: continue writing to current log */ }
 
   const line = JSON.stringify(event) + "\n";
   fs.appendFileSync(logPath, line, { mode: 0o600 });

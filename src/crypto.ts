@@ -119,8 +119,11 @@ export async function writeCredentialFile(
   const filePath = path.join(vaultDir, `${toolName}.enc`);
   const payload = await encrypt(credential, passphrase);
   fs.mkdirSync(vaultDir, { recursive: true });
-  fs.writeFileSync(filePath, payload);
-  fs.chmodSync(filePath, 0o600);
+  // Atomic write: tmp + rename to prevent corruption on crash
+  const tmpPath = filePath + ".tmp";
+  fs.writeFileSync(tmpPath, payload);
+  fs.chmodSync(tmpPath, 0o600);
+  fs.renameSync(tmpPath, filePath);
   return filePath;
 }
 

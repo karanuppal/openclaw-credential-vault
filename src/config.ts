@@ -47,8 +47,11 @@ export function readConfig(vaultDir: string): VaultConfig {
       try {
         const backupRaw = fs.readFileSync(backupPath, "utf8");
         parsed = YAML.parse(backupRaw);
-        // Restore from backup
-        fs.writeFileSync(configPath, backupRaw, "utf8");
+        // Restore from backup using atomic write (tmp + rename)
+        const tmpRestore = configPath + ".tmp";
+        fs.writeFileSync(tmpRestore, backupRaw, "utf8");
+        fs.chmodSync(tmpRestore, 0o600);
+        fs.renameSync(tmpRestore, configPath);
         console.error(`[vault] tools.yaml was corrupted — restored from backup`);
       } catch {
         throw yamlErr; // Backup also corrupted, throw original error

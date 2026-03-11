@@ -676,21 +676,6 @@ export function registerCliCommands(program: CliProgram): void {
         const passphrase = getPassphrase(vaultDir);
         let rotatedCount = 0;
 
-        // Read from stdin for interactive prompts
-        const readline = await import("node:readline");
-        const rl = readline.createInterface({
-          input: process.stdin,
-          output: process.stdout,
-        });
-
-        const question = (prompt: string): Promise<string> => {
-          return new Promise((resolve) => {
-            rl.question(prompt, (answer) => {
-              resolve(answer);
-            });
-          });
-        };
-
         for (const name of toolNames) {
           const toolConfig = config.tools[name];
           const rotation = toolConfig.rotation ?? {};
@@ -713,7 +698,7 @@ export function registerCliCommands(program: CliProgram): void {
             console.log(`  Scopes: ${rotation.scopes.join(", ")}`);
           }
 
-          const answer = await question(`  Enter new credential for "${name}" (or press Enter to skip): `);
+          const answer = await promptUser(`  Enter new credential for "${name}" (or press Enter to skip): `);
 
           if (answer.trim()) {
             // Remove old file and write new one
@@ -740,8 +725,6 @@ export function registerCliCommands(program: CliProgram): void {
             console.log(`  ⏭ Skipped: ${name}\n`);
           }
         }
-
-        rl.close();
 
         if (rotatedCount > 0) {
           const reloaded = signalGatewayReload();
