@@ -206,7 +206,9 @@ export function getOverdueCredentials(
  */
 export function signalGatewayReload(): boolean {
   try {
-    // Try PID file first
+    // Only signal the gateway if it's running under our HOME.
+    // When CLI runs with a different HOME (isolated testing), skip the signal
+    // to avoid corrupting the real gateway's in-memory state with rapid reloads.
     const pidFile = path.join(
       process.env.HOME ?? "~",
       ".openclaw",
@@ -217,17 +219,9 @@ export function signalGatewayReload(): boolean {
       pid = parseInt(fs.readFileSync(pidFile, "utf8").trim(), 10);
       if (isNaN(pid)) pid = undefined;
     }
-    // Fallback: find gateway via pgrep (common when running under systemd)
-    if (!pid) {
-      try {
-        const { execSync } = require("node:child_process");
-        const result = execSync("pgrep -f openclaw-gateway", { encoding: "utf8", timeout: 3000 }).trim();
-        const pids = result.split("\n").map((s: string) => parseInt(s, 10)).filter((n: number) => !isNaN(n));
-        if (pids.length > 0) pid = pids[0];
-      } catch {
-        // pgrep not found or no process — fall through
-      }
-    }
+    // Only use PID file — no pgrep fallback.
+    // pgrep can find gateways belonging to other HOME dirs and signal them,
+    // which corrupts their state when CLI is running in an isolated environment.
     if (!pid) return false;
     process.kill(pid, "SIGUSR2");
     return true;
