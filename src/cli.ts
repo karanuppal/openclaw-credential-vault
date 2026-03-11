@@ -310,50 +310,38 @@ export function registerCliCommands(program: CliProgram): void {
       const vaultDir = getVaultDir();
 
       const alreadyInitialized = fs.existsSync(path.join(vaultDir, "tools.yaml"));
-      const uid = process.getuid?.() ?? -1;
-      const isRoot = uid === 0;
+      const config = alreadyInitialized ? readConfig(vaultDir) : null;
+      const setupScript = path.resolve(path.join(__dirname, "..", "bin", "vault-setup.sh"));
+      const hasSetupScript = fs.existsSync(setupScript);
 
-      // Step 1: Initialize the vault if not already done
+      // Already fully set up
+      if (alreadyInitialized && config?.resolverMode === "binary") {
+        console.log(`✓ Vault initialized at ${vaultDir}`);
+        console.log("  Mode: binary resolver (OS-level isolation active)");
+        console.log("\nUse 'openclaw vault add <tool> --key <credential>' to add credentials.");
+        return;
+      }
+
+      // Not initialized or inline mode — show the recommended setup path
       if (!alreadyInitialized) {
-        if (isRoot) {
-          console.error("Error: Run 'openclaw vault init' as your normal user first, then upgrade with the setup script.");
-          console.error("  The vault must be initialized as the user who runs OpenClaw.");
-          return;
-        }
+        // Initialize inline mode as immediate baseline
         initConfig(vaultDir, "machine");
         console.log(`✓ Vault initialized at ${vaultDir}`);
-        console.log(`  Master key mode: machine`);
-        console.log(`  Encryption: AES-256-GCM + Argon2id`);
-        console.log(`  Mode: inline decryption (credentials encrypted at rest)\n`);
+        console.log(`  Encryption: AES-256-GCM + Argon2id\n`);
       } else {
-        console.log(`✓ Vault already initialized at ${vaultDir}`);
-        const config = readConfig(vaultDir);
-        if (config.resolverMode === "binary") {
-          console.log("  Mode: binary resolver (OS-level isolation active)");
-          console.log("\n  Use 'openclaw vault add <tool> --key <credential>' to add credentials.");
-          return;
-        }
-        console.log(`  Mode: inline decryption\n`);
+        console.log(`✓ Vault already initialized at ${vaultDir}\n`);
       }
 
-      // Step 2: Show setup script path for OS-level isolation upgrade
-      const setupScript = path.resolve(path.join(__dirname, "..", "bin", "vault-setup.sh"));
-      if (fs.existsSync(setupScript)) {
-        console.log("┌─────────────────────────────────────────────────────────┐");
-        console.log("│  RECOMMENDED: Enable OS-level credential isolation      │");
-        console.log("│                                                         │");
-        console.log("│  This creates a separate system user so the AI agent    │");
-        console.log("│  cannot read credential files — even with exec access.  │");
-        console.log("│                                                         │");
-        console.log("│  Run this once:                                         │");
-        console.log(`│  sudo bash ${setupScript}`);
-        console.log("│                                                         │");
-        console.log("│  Then restart the gateway:                              │");
-        console.log("│  openclaw doctor fix                                    │");
-        console.log("└─────────────────────────────────────────────────────────┘");
+      if (hasSetupScript) {
+        console.log("To complete setup with full security (recommended):\n");
+        console.log(`  sudo bash ${setupScript}`);
+        console.log("  openclaw doctor fix\n");
+        console.log("This creates a dedicated system user so the AI agent cannot read");
+        console.log("credential files directly. Without this, credentials are encrypted");
+        console.log("but the agent runs as the same OS user.\n");
       }
 
-      console.log("\nUse 'openclaw vault add <tool> --key <credential>' to add credentials.");
+      console.log("Use 'openclaw vault add <tool> --key <credential>' to add credentials.");
     });
 
   // vault add <tool>

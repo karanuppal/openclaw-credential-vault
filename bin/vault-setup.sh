@@ -125,20 +125,37 @@ else
   echo "ℹ No credential files to migrate"
 fi
 
-# ── Step 5: Update vault config ──
+# ── Step 5: Initialize vault if not already done ──
 TOOLS_YAML="${VAULT_DIR}/tools.yaml"
-if [ -f "$TOOLS_YAML" ]; then
-  # Update resolverMode to binary (simple sed — works for YAML)
+if [ ! -f "$TOOLS_YAML" ]; then
+  echo "Initializing vault..."
+  mkdir -p "$VAULT_DIR"
+  cat > "$TOOLS_YAML" <<EOF
+version: 1
+masterKeyMode: machine
+resolverMode: binary
+tools: {}
+EOF
+  # Create .vault-meta.json
+  cat > "${VAULT_DIR}/.vault-meta.json" <<EOF
+{
+  "createdAt": "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)",
+  "installTimestamp": "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)",
+  "masterKeyMode": "machine"
+}
+EOF
+  chmod 600 "$TOOLS_YAML" "${VAULT_DIR}/.vault-meta.json"
+  chown "${OPENCLAW_USER}:${OPENCLAW_USER}" "$VAULT_DIR" "$TOOLS_YAML" "${VAULT_DIR}/.vault-meta.json"
+  echo "✓ Vault initialized at ${VAULT_DIR}"
+else
+  # Update resolverMode to binary
   if grep -q "resolverMode:" "$TOOLS_YAML"; then
     sed -i 's/resolverMode:.*/resolverMode: binary/' "$TOOLS_YAML"
   else
     echo "resolverMode: binary" >> "$TOOLS_YAML"
   fi
-  # Ensure the file is owned by the original user, not root
   chown "${OPENCLAW_USER}:${OPENCLAW_USER}" "$TOOLS_YAML"
   echo '✓ Config updated: resolverMode = "binary"'
-else
-  echo "⚠ No tools.yaml found at ${TOOLS_YAML} — run 'openclaw vault init' first"
 fi
 
 echo ""
