@@ -305,11 +305,9 @@ export function registerCliCommands(program: CliProgram): void {
   // vault init
   vault
     .command("init")
-    .description("Initialize the credential vault")
-    .option("--passphrase", "Use passphrase-based encryption (default: machine-specific key)")
-    .action(async (options: { passphrase?: boolean }) => {
+    .description("Initialize the credential vault (includes resolver setup when run as root)")
+    .action(async () => {
       const vaultDir = getVaultDir();
-      const mode = options.passphrase ? "passphrase" : "machine";
 
       if (fs.existsSync(path.join(vaultDir, "tools.yaml"))) {
         console.log("⚠ Vault already initialized at", vaultDir);
@@ -317,13 +315,20 @@ export function registerCliCommands(program: CliProgram): void {
         return;
       }
 
-      initConfig(vaultDir, mode);
+      initConfig(vaultDir, "machine");
       console.log(`✓ Vault initialized at ${vaultDir}`);
-      console.log(`  Master key mode: ${mode}`);
-      if (mode === "passphrase") {
-        console.log("  Set OPENCLAW_VAULT_PASSPHRASE to your passphrase before using vault commands.");
+      console.log(`  Master key mode: machine`);
+
+      // If running as root, also set up the Rust resolver for OS-level isolation
+      const uid = process.getuid?.() ?? -1;
+      if (uid === 0) {
+        console.log("\nRunning as root — setting up resolver for OS-level credential isolation...\n");
+        await setupResolverInternal(vaultDir);
+      } else {
+        console.log("\n  Tip: Run 'sudo openclaw vault init' to also set up OS-level credential isolation.");
       }
-      console.log("  Use 'openclaw vault add <tool> --key <credential>' to add credentials.");
+
+      console.log("\n  Use 'openclaw vault add <tool> --key <credential>' to add credentials.");
     });
 
   // vault add <tool>
@@ -845,128 +850,113 @@ export function registerCliCommands(program: CliProgram): void {
       console.log(`\n✓ Tool "${tool}" is configured correctly.`);
     });
 
-  // vault setup-resolver
-  vault
-    .command("setup-resolver")
-    .description("Install the Rust resolver binary with setuid for OS-level credential isolation (Phase 2)")
-    .action(async () => {
-      // 1. Check if running as root
-      const uid = process.getuid?.() ?? -1;
-      if (uid !== 0) {
-        console.error("Error: setup-resolver must be run as root (sudo).");
-        console.error("Usage: sudo openclaw vault setup-resolver");
-        return;
+  // Internal helper for resolver setup (used by vault init when running as root)
+  async function setupResolverInternal(vaultDir: string) {
+    const config = readConfig(vaultDir);
+
+    // Find the resolver binary
+    const devBinaryPaths = [
+      path.join(__dirname, "..", "resolver", "target", "release", "openclaw-vault-resolver"),
+      path.join(__dirname, "..", "resolver", "target", "x86_64-unknown-linux-musl", "release", "openclaw-vault-resolver"),
+    ];
+
+    let sourceBinary: string | null = null;
+    for (const p of devBinaryPaths) {
+      if (fs.existsSync(p)) {
+        sourceBinary = p;
+        break;
       }
+    }
 
-      const vaultDir = getVaultDir();
-      const config = readConfig(vaultDir);
+    if (!sourceBinary) {
+      console.log("ℹ Resolver binary not found — skipping OS-level isolation setup.");
+      console.log("  Build it with: cd resolver && cargo build --release --target x86_64-unknown-linux-musl");
+      console.log("  Then re-run: sudo openclaw vault init");
+      return;
+    }
 
-      // 2. Find the resolver binary
-      const devBinaryPaths = [
-        path.join(__dirname, "..", "resolver", "target", "release", "openclaw-vault-resolver"),
-        path.join(__dirname, "..", "resolver", "target", "x86_64-unknown-linux-musl", "release", "openclaw-vault-resolver"),
-      ];
+    const { execSync } = await import("node:child_process");
 
-      let sourceBinary: string | null = null;
-      for (const p of devBinaryPaths) {
-        if (fs.existsSync(p)) {
-          sourceBinary = p;
-          break;
-        }
-      }
-
-      if (!sourceBinary) {
-        console.error("Error: Resolver binary not found. Build it first:");
-        console.error("  cd resolver && cargo build --release --target x86_64-unknown-linux-musl");
-        return;
-      }
-
-      const { execSync } = await import("node:child_process");
-
-      // 3. Create openclaw-vault system user if it doesn't exist
+    // Create openclaw-vault system user if it doesn't exist
+    try {
+      execSync("id openclaw-vault", { stdio: "ignore" });
+      console.log("✓ System user 'openclaw-vault' already exists");
+    } catch {
       try {
-        execSync("id openclaw-vault", { stdio: "ignore" });
-        console.log("✓ System user 'openclaw-vault' already exists");
-      } catch {
-        try {
-          execSync(
-            "useradd --system --no-create-home --shell /usr/sbin/nologin openclaw-vault",
-            { stdio: "inherit" }
-          );
-          console.log("✓ Created system user 'openclaw-vault'");
-        } catch (e) {
-          console.error(`✗ Failed to create system user: ${(e as Error).message}`);
-          return;
-        }
-      }
-
-      // 4. Copy resolver binary to /usr/local/bin/
-      const destBinary = "/usr/local/bin/openclaw-vault-resolver";
-      try {
-        fs.copyFileSync(sourceBinary, destBinary);
-        // Set ownership to openclaw-vault and set setuid bit
-        execSync(`chown openclaw-vault:openclaw-vault ${destBinary}`);
-        execSync(`chmod u+s,a+rx ${destBinary}`); // setuid + readable/executable by all
-        console.log(`✓ Resolver binary installed: ${destBinary} (setuid openclaw-vault)`);
+        execSync(
+          "useradd --system --no-create-home --shell /usr/sbin/nologin openclaw-vault",
+          { stdio: "inherit" }
+        );
+        console.log("✓ Created system user 'openclaw-vault'");
       } catch (e) {
-        console.error(`✗ Failed to install binary: ${(e as Error).message}`);
+        console.error(`✗ Failed to create system user: ${(e as Error).message}`);
         return;
       }
+    }
 
-      // 5. Create /var/lib/openclaw-vault/ owned by openclaw-vault
-      const systemVaultDir = "/var/lib/openclaw-vault";
-      try {
-        fs.mkdirSync(systemVaultDir, { recursive: true });
-        execSync(`chown openclaw-vault:openclaw-vault ${systemVaultDir}`);
-        fs.chmodSync(systemVaultDir, 0o700);
-        console.log(`✓ System vault directory: ${systemVaultDir} (owned by openclaw-vault)`);
-      } catch (e) {
-        console.error(`✗ Failed to create system vault directory: ${(e as Error).message}`);
-        return;
-      }
+    // Copy resolver binary to /usr/local/bin/
+    const destBinary = "/usr/local/bin/openclaw-vault-resolver";
+    try {
+      fs.copyFileSync(sourceBinary, destBinary);
+      execSync(`chown openclaw-vault:openclaw-vault ${destBinary}`);
+      execSync(`chmod u+s,a+rx ${destBinary}`);
+      console.log(`✓ Resolver binary installed: ${destBinary} (setuid openclaw-vault)`);
+    } catch (e) {
+      console.error(`✗ Failed to install binary: ${(e as Error).message}`);
+      return;
+    }
 
-      // 6. Migrate credential files from ~/.openclaw/vault/ to /var/lib/openclaw-vault/
-      let migratedCount = 0;
-      const userVaultDir = vaultDir;
-      if (fs.existsSync(userVaultDir)) {
-        const files = fs.readdirSync(userVaultDir);
-        for (const file of files) {
-          if (file.endsWith(".enc") || file === ".vault-meta.json") {
-            const src = path.join(userVaultDir, file);
-            const dest = path.join(systemVaultDir, file);
-            fs.copyFileSync(src, dest);
-            execSync(`chown openclaw-vault:openclaw-vault "${dest}"`);
-            fs.chmodSync(dest, 0o600);
-            migratedCount++;
-          }
+    // Create /var/lib/openclaw-vault/ owned by openclaw-vault
+    const systemVaultDir = "/var/lib/openclaw-vault";
+    try {
+      fs.mkdirSync(systemVaultDir, { recursive: true });
+      execSync(`chown openclaw-vault:openclaw-vault ${systemVaultDir}`);
+      fs.chmodSync(systemVaultDir, 0o700);
+      console.log(`✓ System vault directory: ${systemVaultDir} (owned by openclaw-vault)`);
+    } catch (e) {
+      console.error(`✗ Failed to create system vault directory: ${(e as Error).message}`);
+      return;
+    }
+
+    // Migrate credential files from ~/.openclaw/vault/ to /var/lib/openclaw-vault/
+    let migratedCount = 0;
+    if (fs.existsSync(vaultDir)) {
+      const files = fs.readdirSync(vaultDir);
+      for (const file of files) {
+        if (file.endsWith(".enc") || file === ".vault-meta.json") {
+          const src = path.join(vaultDir, file);
+          const dest = path.join(systemVaultDir, file);
+          fs.copyFileSync(src, dest);
+          execSync(`chown openclaw-vault:openclaw-vault "${dest}"`);
+          fs.chmodSync(dest, 0o600);
+          migratedCount++;
         }
-        if (migratedCount > 0) {
-          console.log(`✓ Migrated ${migratedCount} file(s) to ${systemVaultDir}`);
-        } else {
-          console.log("ℹ No credential files to migrate");
-        }
       }
-
-      // 7. Update tools.yaml to set resolverMode to "binary"
-      const updatedConfig = {
-        ...config,
-        resolverMode: "binary" as const,
-      };
-      writeConfig(vaultDir, updatedConfig);
-      console.log('✓ Config updated: resolverMode = "binary"');
-
-      // 8. Signal gateway reload
-      const reloaded = signalGatewayReload();
-      if (reloaded) {
-        console.log("✓ Gateway reloaded (SIGUSR2)");
+      if (migratedCount > 0) {
+        console.log(`✓ Migrated ${migratedCount} file(s) to ${systemVaultDir}`);
       } else {
-        console.log("ℹ Gateway not running — changes will take effect on next start");
+        console.log("ℹ No credential files to migrate");
       }
+    }
 
-      console.log("\n✓ Phase 2 resolver setup complete.");
-      console.log("  Credentials are now isolated behind OS-user separation.");
-      console.log("  The gateway process can no longer read credential files directly.");
-    });
+    // Update tools.yaml to set resolverMode to "binary"
+    const updatedConfig = {
+      ...config,
+      resolverMode: "binary" as const,
+    };
+    writeConfig(vaultDir, updatedConfig);
+    console.log('✓ Config updated: resolverMode = "binary"');
+
+    // Signal gateway reload
+    const reloaded = signalGatewayReload();
+    if (reloaded) {
+      console.log("✓ Gateway reloaded (SIGUSR2)");
+    } else {
+      console.log("ℹ Gateway not running — changes will take effect on next start");
+    }
+
+    console.log("\n✓ Resolver setup complete — credentials isolated behind OS-user separation.");
+  }
 
   // vault audit
   vault
