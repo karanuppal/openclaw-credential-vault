@@ -1,5 +1,5 @@
 {
-  "id": "credential-vault",
+  "id": "openclaw-credential-vault",
   "name": "Credential Vault",
   "version": "0.1.0",
   "description": "Encrypts, injects, and scrubs external tool credentials at runtime",
