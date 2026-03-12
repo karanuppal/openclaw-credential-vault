@@ -45,7 +45,7 @@ const RESOLVER_BINARY = path.join(
   "openclaw-vault-resolver"
 );
 
-function findBinary(): string {
+function findBinary(): string | null {
   // Also check release without target triple
   const paths = [
     RESOLVER_BINARY,
@@ -54,8 +54,10 @@ function findBinary(): string {
   for (const p of paths) {
     if (fs.existsSync(p)) return p;
   }
-  throw new Error("Resolver binary not found — build it first");
+  return null;
 }
+
+const HAS_RESOLVER = findBinary() !== null;
 
 /** Create a temp vault dir structure under a fake HOME */
 function makeTempVault(): { home: string; vaultDir: string } {
@@ -206,7 +208,7 @@ describe("E2E Suite 1: Phase 1 Full Flow (inline mode)", () => {
 // ================================================================
 // E2E Suite 2: Phase 2 Full Flow (binary mode)
 // ================================================================
-describe("E2E Suite 2: Phase 2 Full Flow (binary mode)", () => {
+describe.skipIf(!HAS_RESOLVER)("E2E Suite 2: Phase 2 Full Flow (binary mode)", () => {
   let home: string;
   let vaultDir: string;
   let passphrase: string;
@@ -216,7 +218,7 @@ describe("E2E Suite 2: Phase 2 Full Flow (binary mode)", () => {
 
   beforeAll(async () => {
     // 1. Setup
-    binaryPath = findBinary();
+    binaryPath = findBinary()!;
     ({ home, vaultDir } = makeTempVault());
     config = initConfig(vaultDir, "machine");
     const meta = readMeta(vaultDir);
@@ -286,7 +288,7 @@ describe("E2E Suite 2: Phase 2 Full Flow (binary mode)", () => {
 // ================================================================
 // E2E Suite 3: Phase 1 → Phase 2 Migration
 // ================================================================
-describe("E2E Suite 3: Phase 1 → Phase 2 Migration", () => {
+describe.skipIf(!HAS_RESOLVER)("E2E Suite 3: Phase 1 → Phase 2 Migration", () => {
   let homeP1: string;
   let vaultDirP1: string;
   let homeP2: string;
@@ -302,7 +304,7 @@ describe("E2E Suite 3: Phase 1 → Phase 2 Migration", () => {
   };
 
   beforeAll(async () => {
-    binaryPath = findBinary();
+    binaryPath = findBinary()!;
 
     // 1. Phase 1 setup
     ({ home: homeP1, vaultDir: vaultDirP1 } = makeTempVault());

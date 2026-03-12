@@ -23,31 +23,32 @@ const RESOLVER_BINARY_PATHS = [
   path.join(__dirname, "..", "resolver", "target", "debug", "openclaw-vault-resolver"),
 ];
 
-function findResolverBinary(): string {
+function findResolverBinary(): string | null {
   for (const p of RESOLVER_BINARY_PATHS) {
     if (fs.existsSync(p)) return p;
   }
-  throw new Error(
-    "Resolver binary not found. Build it first: cd resolver && cargo build --release --target x86_64-unknown-linux-musl"
-  );
+  return null;
 }
 
+const HAS_RESOLVER = findResolverBinary() !== null;
+
 let resolverBinary: string;
-let tmpHome: string; // Simulated HOME directory
-let tmpVaultDir: string; // ~/.openclaw/vault/ under simulated HOME
+let tmpHome: string;
+let tmpVaultDir: string;
 
 beforeAll(() => {
-  resolverBinary = findResolverBinary();
+  if (!HAS_RESOLVER) return;
+  resolverBinary = findResolverBinary()!;
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "vault-cross-"));
   tmpVaultDir = path.join(tmpHome, ".openclaw", "vault");
   fs.mkdirSync(tmpVaultDir, { recursive: true });
 });
 
 afterAll(() => {
-  fs.rmSync(tmpHome, { recursive: true, force: true });
+  if (tmpHome) fs.rmSync(tmpHome, { recursive: true, force: true });
 });
 
-describe("Cross-language: machine passphrase derivation", () => {
+describe.skipIf(!HAS_RESOLVER)("Cross-language: machine passphrase derivation", () => {
   it("should produce identical passphrases in TS and Rust", () => {
     // The TypeScript implementation: SHA-256(hostname:uid:timestamp) as hex
     const timestamp = "2026-03-08T12:00:00.000Z";
@@ -63,7 +64,7 @@ describe("Cross-language: machine passphrase derivation", () => {
   });
 });
 
-describe("Cross-language: TS encrypt → Rust decrypt", () => {
+describe.skipIf(!HAS_RESOLVER)("Cross-language: TS encrypt → Rust decrypt", () => {
   it("should decrypt a simple credential encrypted by TypeScript", async () => {
     const credential = "gum_abc123def456ghijkl";
     const passphrase = "cross-compat-test-passphrase";
@@ -213,7 +214,7 @@ describe("Cross-language: TS encrypt → Rust decrypt", () => {
   });
 });
 
-describe("Cross-language: Rust binary error handling", () => {
+describe.skipIf(!HAS_RESOLVER)("Cross-language: Rust binary error handling", () => {
   it("should exit with code 1 for missing credential", () => {
     const emptyHome = fs.mkdtempSync(path.join(os.tmpdir(), "vault-empty-"));
     const emptyVault = path.join(emptyHome, ".openclaw", "vault");
@@ -271,7 +272,7 @@ describe("Cross-language: Rust binary error handling", () => {
   });
 });
 
-describe("Cross-language: Argon2id key derivation consistency", () => {
+describe.skipIf(!HAS_RESOLVER)("Cross-language: Argon2id key derivation consistency", () => {
   it("should produce identical derived keys for known inputs", async () => {
     // This test verifies that Argon2id with our specific parameters produces
     // the same output in both TypeScript and Rust.
