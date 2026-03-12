@@ -284,6 +284,12 @@ async function getCredential(
 /** Accumulated resolver warnings for the current tool call */
 let pendingResolverWarnings: string[] = [];
 
+/** Reset resolver state — for testing only */
+function _resetResolverState(): void {
+  pendingResolverWarnings = [];
+  resolverMismatchWarned = false;
+}
+
 async function resolveVaultRef(
   value: string,
   st: VaultState,
@@ -876,5 +882,7 @@ export {
   handleAfterCompaction,
   handleGatewayStart,
   scrubWriteEditContent,
+  buildResolverWarning,
+  _resetResolverState,
   state as _state,
 };
