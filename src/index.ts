@@ -505,25 +505,32 @@ async function handleBeforeToolCall(
       const cmdStr = String(params.command ?? params.url ?? "");
       const startTime = Date.now();
 
-      // Inject environment variables
+      // Inject environment variables via params.env + Perl stdout scrubber
       if (rule.env) {
         const existingEnv = (params.env ?? {}) as Record<string, string>;
-        const envExports: string[] = [];
+        const scrubPairs: Array<{b64Value: string; replacement: string}> = [];
         for (const [envKey, envVal] of Object.entries(rule.env)) {
           const resolved = await resolveVaultRef(envVal, state, toolName, cmdStr);
           existingEnv[envKey] = resolved;
-          process.env[envKey] = resolved;
-          if (!state.injectedEnvVars) state.injectedEnvVars = [];
-          state.injectedEnvVars.push(envKey);
-          // Build export prefix — single quotes to prevent shell interpretation
-          const escaped = resolved.replace(/'/g, "'\\''");
-          envExports.push(`export ${envKey}='${escaped}'`);
+          // Collect credential values for Perl scrubber (base64-encode to avoid
+          // all shell/perl escaping issues with special characters in credentials)
+          const b64Value = Buffer.from(resolved).toString("base64");
+          scrubPairs.push({ b64Value, replacement: `[VAULT:${vaultToolName}]` });
         }
         params.env = existingEnv;
-        // Prepend exports to command so subprocess inherits the credentials
-        // The credential in the command string is scrubbed by tool_result_persist
-        if (envExports.length > 0 && toolName === "exec" && params.command) {
-          params.command = `${envExports.join(" && ")} && ${params.command}`;
+
+        // Append Perl stdout scrubber: decode base64 credential at runtime,
+        // replace any occurrence in output. Uses pipefail to preserve exit code.
+        if (scrubPairs.length > 0 && toolName === "exec" && params.command) {
+          // Build perl BEGIN block that decodes credentials from base64
+          const perlBegin = scrubPairs
+            .map((p, i) => `use MIME::Base64; $s${i}=decode_base64("${p.b64Value}"); $r${i}="${p.replacement}";`)
+            .join(" ");
+          const perlSubs = scrubPairs
+            .map((_, i) => `s/\\Q$s${i}\\E/$r${i}/g`)
+            .join("; ");
+          const perlScript = `BEGIN { ${perlBegin} } ${perlSubs}`;
+          params.command = `set -o pipefail; { ${params.command} ; } 2>&1 | perl -pe '${perlScript}'`;
         }
 
         // Track injection for audit
