@@ -522,6 +522,15 @@ export function registerCliCommands(program: CliProgram): void {
       const filePath = await writeCredentialFile(vaultDir, tool, options.key, passphrase);
       if (config.resolverMode === "binary") {
         syncToSystemVault(vaultDir, tool);
+        // Verify sync succeeded
+        const systemPath = "/var/lib/openclaw-vault/" + tool + ".enc";
+        try {
+          fs.accessSync(systemPath, fs.constants.F_OK);
+        } catch {
+          console.log(`\n⚠ Warning: Credential stored locally but NOT synced to system vault.`);
+          console.log(`  The binary resolver won't find this credential.`);
+          console.log(`  Fix: Run 'sudo bash vault-setup.sh'`);
+        }
       }
       console.log(`\n✓ Credential stored: ${tool} (AES-256-GCM encrypted)`);
 
@@ -572,6 +581,12 @@ export function registerCliCommands(program: CliProgram): void {
       const reloaded = signalGatewayReload();
       if (reloaded) {
         console.log("✓ Gateway reloaded (SIGUSR2) — no restart needed");
+      }
+
+      if (options.yes && (guess.confidence === "low" || guess.format === "unknown" || guess.format === "password")) {
+        console.log(`\n⚠ Auto-detected injection config may not be correct for "${tool}".`);
+        console.log(`  Review with: openclaw vault show ${tool}`);
+        console.log(`  Edit tools.yaml manually if env var names or command patterns need adjustment.`);
       }
 
       console.log(`\nTool "${tool}" is ready. Your agent can now use it without seeing the credential.`);
