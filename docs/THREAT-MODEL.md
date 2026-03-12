@@ -182,6 +182,21 @@ Another plugin inspects the vault's credential cache via shared process memory
 ```
 **Mitigation:** The credential cache is a private `Map<string, {value, cachedAt}>` in the plugin's closure scope. Not exported, not accessible via the plugin API. This is convention-based isolation — plugins share a process but not module scope.
 
+### Path 9: Resolver Version Mismatch
+
+```
+npm update delivers new plugin + pre-built binary, but user hasn't
+re-run vault-setup.sh to copy the updated binary to /usr/local/bin/
+```
+**Mitigation:** Both the TypeScript plugin and Rust resolver include a `protocol_version` field in their JSON communication. On mismatch:
+- The resolver rejects the request with a structured `EPROTO` error
+- The plugin surfaces a warning in the tool output with the exact fix command (`sudo bash vault-setup.sh`)
+- The audit log records a `resolver_failure` event
+- Default policy (`onResolverFailure: "block"`): credential not injected, command runs without authentication
+- Optional policy (`onResolverFailure: "warn-and-inline"`): falls back to inline decryption with a `security_downgrade` audit event
+
+This path only applies to binary mode users. In inline mode, the resolver is not involved.
+
 ---
 
 ## Defense Layer Matrix
@@ -197,6 +212,7 @@ Another plugin inspects the vault's credential cache via shared process memory
 | Cookie injection to wrong site | Domain pinning on navigate URL | Cookie domain filtering | — |
 | Env var exposure | Per-subprocess injection (`params.env`) | Env-var name scrubbing | Post-call `process.env` cleanup |
 | Compromised resolver binary | seccomp filter (restricts syscalls) | Capability dropping | — |
+| Resolver version mismatch | Protocol version check | Block + warning in tool output | Audit log event |
 
 ---
 

@@ -468,6 +468,18 @@ Comparison with the prior audit dated 2026-03-11.
 - **Comprehensive dependency analysis** — Prior audit did not include npm audit results or Rust crate assessment.
 - **Rust resolver source review** — This audit includes line-by-line review of `resolver/src/main.rs` including seccomp filter, capability dropping, and path resolution.
 
+### Post-Audit Changes (2026-03-12, same day)
+
+The following changes were implemented during the doc review session after the audit was completed:
+
+- **Protocol versioning added to resolver** — Both TS plugin and Rust resolver now include `protocol_version` in their JSON communication. On mismatch, the resolver rejects with a structured `EPROTO` error. This addresses the version drift risk identified in the v4.5.5 spec (Pitfall #17).
+- **Configurable resolver failure policy** — New `onResolverFailure` config option: `"block"` (default, credential not injected) or `"warn-and-inline"` (falls back to inline decryption with security downgrade audit event).
+- **Actionable warnings on resolver failure** — Warnings injected into tool output include direction-specific fix instructions (which side to update). Prominent console warning on first mismatch per session.
+- **New audit event types** — `resolver_failure` and `security_downgrade` events written to audit log on resolver failures.
+- **Pre-built binary rebuilt** — `bin/linux-x64/openclaw-vault-resolver` updated with protocol versioning support.
+- **THREAT-MODEL.md accuracy pass** — Threat 1 reframed (honest about prompt injection limits), Threat 6 corrected (process.env is briefly set during injection), Path 4 fixed, overview tightened.
+- **Sandbox compatibility documented** — SPEC.md and README.md now honestly state sandbox mode is untested with real gateway Docker sandbox.
+
 ### What Improved Since Prior Audit
 
 - All 12 bugs identified in the prior audit remain fixed (verified by code inspection):

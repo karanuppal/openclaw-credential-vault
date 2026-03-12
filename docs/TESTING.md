@@ -194,8 +194,11 @@ End-to-end tests of the complete credential lifecycle:
 
 **Phase 2 (binary mode):**
 - Resolver binary spawning and JSON protocol
+- Protocol version negotiation (version match, mismatch detection, backward compat with old resolvers)
 - Cross-process credential resolution
 - Error handling for missing credentials, decrypt failures, permission denied
+- Resolver failure policy: `block` (credential not injected, warning in output) and `warn-and-inline` (fallback to inline decryption with security downgrade audit event)
+- Actionable user-facing warnings with direction-specific fix instructions
 
 **Migration (Phase 1 → Phase 2):**
 - Credential files migrated to system vault directory
@@ -367,7 +370,7 @@ Which components are tested by which test categories:
 | browser.ts | ✅ browser, browser-password, browser-cookie | ✅ cli-browser | ✅ adversarial (domain pinning) | — |
 | audit.ts | ✅ audit, audit-log | ✅ e2e | — | — |
 | vault-status.ts | — | ✅ rotation (status data) | — | — |
-| resolver.ts | — | ✅ e2e (Phase 2) | — | — |
+| resolver.ts | — | ✅ e2e (Phase 2), protocol versioning | — | — |
 | index.ts (hooks) | — | ✅ hooks, e2e, sandbox-e2e | ✅ write-edit-scrub, compaction-scrub, subagent-isolation, concurrent | — |
 
 ### Test file by category

@@ -46,7 +46,7 @@ Agent sees clean PR listings — no credential anywhere in context
 
 **Encryption:** AES-256-GCM with Argon2id key derivation (64 MiB memory, 3 iterations). Each credential is a separate `.enc` file.
 
-**Isolation:** The Rust resolver binary runs as a dedicated `openclaw-vault` system user via setuid. The agent process can't read the credential files — it gets "Permission denied."
+**Isolation:** The Rust resolver binary runs as a dedicated `openclaw-vault` system user via setuid. The agent process can't read the credential files — it gets "Permission denied." The plugin and resolver use protocol versioning to detect mismatches after updates — if `npm update` delivers a new version, the plugin surfaces actionable fix instructions (`sudo bash vault-setup.sh`) until the installed binary is updated.
 
 **Scrubbing:** Three redundant layers catch credentials in tool output, file writes, outbound messages, and session transcripts. Patterns for GitHub, Stripe, Gumroad, OpenAI, and Anthropic tokens ship built-in.
 
