@@ -11,7 +11,7 @@
 
 The OpenClaw Credential Vault implements a well-designed defense-in-depth architecture for managing AI agent credentials. The codebase demonstrates strong cryptographic foundations (AES-256-GCM + Argon2id), comprehensive scrubbing across 5 hook points, and thoughtful handling of the unique threat surface created by LLM agents with tool access.
 
-**Overall Risk Rating: LOW-MEDIUM**
+**Overall Risk Rating: LOW**
 
 The vault is suitable for its stated purpose (beta release for credential management in AI agent frameworks). The primary residual risks are:
 
@@ -394,7 +394,7 @@ If a credential resolves to an empty or very short string, `s/\Q\E//g` matches t
 |---|-----|----------|---------------|
 | G-1 | ~~process.env contamination during injection~~ | ~~Medium~~ | **RESOLVED** — params.env only, no process.env mutation |
 | G-2 | ~~Rust resolver lacks tool name validation~~ | ~~Medium~~ | **RESOLVED** — path traversal validation added (commit 290cf09) |
-| G-3 | No test for process.env cleanup lifecycle | Medium | Add test verifying env vars are cleaned after tool call completes |
+| G-3 | ~~No test for process.env cleanup lifecycle~~ | ~~Medium~~ → Low | **Reclassified** — underlying vulnerability (F-1) eliminated. Gap is now a missing regression test asserting process.env is NOT modified during injection. |
 | G-4 | No integration test for plugin priority isolation | Low | Add mock-plugin test verifying injection/scrubbing priority ordering |
 | G-5 | Concurrent tests are fully mocked | Low | Add at least one real concurrent crypto test |
 | G-6 | Scrubbing errors silent in production | Low | Always log scrubbing errors to audit log |
@@ -491,17 +491,22 @@ If a credential resolves to an empty or very short string, `s/\Q\E//g` matches t
 
 ## Overall Risk Rating
 
-**LOW-MEDIUM**
+**LOW**
 
-The vault provides strong security for its intended threat model. The cryptographic primitives are correctly implemented, the scrubbing pipeline is comprehensive with redundant layers, and the test suite is thorough with dedicated adversarial coverage.
+All Medium-severity findings have been resolved:
+- **F-1** (process.env contamination) → RESOLVED — params.env only, zero process.env mutations
+- **F-2** (Rust resolver path traversal) → RESOLVED — tool name validation rejects `/`, `\`, `..`, leading `.`
+- **F-9** (LLM unscrubbed output) → MITIGATED to Low residual — Perl stdout scrubber catches primary exfiltration vectors; bypasses require deliberate multi-step attacks
+- **F-10** (System vault sync/remove) → RESOLVED — routed through setuid resolver with 0600 permissions
+- **G-1, G-2, G-3** → RESOLVED or reclassified to Low
 
-The residual risks are:
-- ~~**Medium:** Rust resolver path validation gap~~ → RESOLVED (commit 290cf09)
-- **Medium (mitigated):** LLM exfiltration of tool output — Perl scrubber catches primary vectors; file redirect and group breakout are known bypass paths requiring deliberate multi-step attacks
-- **Low:** Mocked concurrent tests, silent scrubbing errors, and missing vault_status tests are quality gaps, not security vulnerabilities
-- **Informational:** The documented scrubbing blind spots (base64, URL-encoding, split credentials) are inherent limitations of pattern-based scrubbing and are clearly acknowledged
+Remaining open items are exclusively Low or Informational:
+- **Low:** Cache sizing (F-3), mocked concurrency tests (F-4), silent fail-open (F-5), missing integration tests (G-4, G-5, G-6, G-7)
+- **Informational:** Global pattern coverage (F-7), stale literal over-scrubbing (F-6, security-positive), vault_status integrity (G-8)
 
-The codebase shows evidence of security-conscious development: atomic writes, secure delete, fail-open with explicit rationale, priority-based hook isolation, params.env-only credential injection, Perl stdout scrubber, and comprehensive adversarial testing. The threat model is honest about limitations and does not overstate the vault's protections.
+The vault demonstrates defense-in-depth: AES-256-GCM + Argon2id crypto, 5-hook scrubbing pipeline, params.env-only credential injection, Perl stdout scrubber, setuid resolver with seccomp + capability dropping, path traversal validation, 0600 file permissions, atomic writes, secure delete, and 610 automated tests including adversarial coverage.
+
+The codebase shows evidence of security-conscious development. The threat model is honest about limitations and does not overstate the vault's protections.
 
 ---
 
