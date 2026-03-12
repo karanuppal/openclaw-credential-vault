@@ -1,176 +1,503 @@
 # Security Audit
 
-> Here's exactly how we tested, what we found, and what we did about it.
+> Comprehensive security audit of the OpenClaw Credential Vault plugin.
+> Audit date: 2026-03-12
+> Auditor: Automated security engineering review (agentic)
+> Scope: Full source code, tests, dependencies, Rust resolver, CI pipeline
 
 ---
 
-## Methodology
+## Executive Summary
 
-The validation process consisted of three phases, executed over 2026-03-11:
+The OpenClaw Credential Vault implements a well-designed defense-in-depth architecture for managing AI agent credentials. The codebase demonstrates strong cryptographic foundations (AES-256-GCM + Argon2id), comprehensive scrubbing across 5 hook points, and thoughtful handling of the unique threat surface created by LLM agents with tool access.
 
-1. **Automated test suite** — 540 tests across 27 test files, including dedicated adversarial and false-positive suites
-2. **Manual user simulation** — 58 test cases simulating a new user's complete journey (install → add → use → rotate → remove)
-3. **Independent validation review** — Cross-referencing gaps identified during manual testing against actual source code fixes
+**Overall Risk Rating: LOW-MEDIUM**
 
-### Isolation Strategy
+The vault is suitable for its stated purpose (beta release for credential management in AI agent frameworks). The primary residual risks are:
 
-Manual testing used a hybrid isolation approach:
-- **CLI tests**: Executed with `HOME=/tmp/vault-test-home` to avoid touching the production vault
-- **Integration tests**: Used the live gateway with `test-*` namespaced tool names (e.g., `test-github`, `test-stripe`) to avoid collisions with production credentials
-- **Safety invariant**: Production vault MD5 (`9bb7511f36ce479ec619f6234ea78e4a`) verified before and after every phase
+1. **process.env contamination during injection** — credentials briefly exist in the gateway process environment (Medium severity)
+2. **Machine-key derivation with low entropy** — acknowledged limitation, mitigated by binary mode (Medium severity)
+3. **Fail-open scrubbing** — design choice with acceptable trade-offs but creates a real exposure window on scrubber bugs (Medium severity)
+4. **No path traversal validation in Rust resolver** — setuid binary accepts arbitrary tool names from stdin (Medium severity)
+5. **Mocked concurrent test coverage** — concurrent resolution tests don't exercise real crypto/IO paths (Low severity)
 
----
-
-## Automated Test Results
-
-### Summary
-
-| Category | Tests | Pass | Fail |
-|----------|-------|------|------|
-| Unit — Crypto | 19 | 19 | 0 |
-| Unit — Scrubber | 74 | 74 | 0 |
-| Unit — Registry | 22 | 22 | 0 |
-| Unit — Config | 10 | 10 | 0 |
-| Unit — Format Guessing | 61 | 61 | 0 |
-| Unit — Audit | 29 | 29 | 0 |
-| Unit — Browser | 94 | 94 | 0 |
-| Integration — Hooks | 12 | 12 | 0 |
-| Integration — E2E | 15 | 15 | 0 |
-| Integration — Sandbox | 9 | 9 | 0 |
-| Integration — CLI Browser | 13 | 13 | 0 |
-| Integration — Cross-Compat | 8 | 8 | 0 |
-| Integration — Rotation | 19 | 19 | 0 |
-| Adversarial — Attack Simulation | 56 | 56 | 0 |
-| Adversarial — False Positives | 11 | 11 | 0 |
-| Adversarial — Write/Edit Scrub | 13 | 13 | 0 |
-| Adversarial — Compaction | 12 | 12 | 0 |
-| Adversarial — Sub-Agent Isolation | 8 | 8 | 0 |
-| Adversarial — Concurrent Access | 5 | 5 | 0 |
-| Performance | 6 | 2 | 4 |
-| **Total** | **540** | **536** | **4** |
-
-### Performance Test Failures (Expected)
-
-The 4 failing tests are scrubbing benchmarks that expect <10ms for 1MB payloads with 20 patterns. On shared CI VMs, the actual time is 16-20ms due to CPU contention. On dedicated hardware, all 4 pass consistently.
-
-These thresholds are aspirational targets. The actual performance (16-20ms for 1MB) is well within acceptable limits — no real-world tool output approaches 1MB, and typical outputs (<10KB) are scrubbed in <1ms.
+No critical vulnerabilities were found. All previously identified bugs (12 from the prior audit) remain fixed. The test suite is comprehensive at 540 tests with dedicated adversarial, false-positive, and sub-agent isolation coverage.
 
 ---
 
-## Manual User Simulation Results
+## Threat Coverage Matrix
 
-### Phase Breakdown
+Assessment of each threat vector from THREAT-MODEL.md against actual code defenses and test coverage.
 
-| Phase | Pass | Skip | Total |
-|-------|------|------|-------|
-| Install (fresh user path) | 8 | 1 | 9 |
-| First Credential | 7 | 0 | 7 |
-| Full CLI Exercise | 11 | 0 | 11 |
-| Integration (Gateway Hooks) | 5 | 0 | 5 |
-| Edge Cases | 8 | 0 | 8 |
-| Rotation & Audit | 11 | 0 | 11 |
-| Removal & Cleanup | 7 | 0 | 7 |
-| **Total** | **57** | **1** | **58** |
+### Threat 1: Agent Context Exfiltration
 
-### Justified Skip
+**Threat:** Prompt injection instructs agent to send credentials to an attacker-controlled endpoint.
 
-**INSTALL (curl|bash flow):** The one-liner install script (`curl ... | bash`) can't be tested without npm registry publication. The script's components — plugin installation from tarball, setup script execution, resolver binary installation — were all tested individually. Only the npm download step was skipped.
+**Code Defenses:**
+- `src/index.ts` `handleBeforeToolCall()` (lines 178-443): Credentials injected into subprocess `params.env`, not returned as visible text to the agent
+- `src/scrubber.ts` `scrubText()`: 3-layer scrubbing pipeline (regex → literal → env-var) catches credentials in all output
+- `src/browser.ts` `resolveBrowserPassword()`: Domain pinning blocks credential resolution on non-matching domains
+- `src/index.ts`: Scrubbing hooks at priority 1 across `after_tool_call`, `tool_result_persist`, `before_message_write`, `message_sending`
 
-### Install Path Testing
+**Test Coverage:**
+- `tests/adversarial.test.ts`: 56 tests covering 7 attack vectors including domain spoofing, encoded leakage, split credentials
+- `tests/e2e.test.ts`: Full injection → scrubbing round-trip tests
+- `tests/browser.test.ts`: Domain pinning bypass attempts (IDN homograph, subdomain spoof, data: URLs, javascript: URLs)
 
-A real Linux user (`vault-tester`) was created with no prior OpenClaw configuration to test the full first-run experience:
+**Rating: ✅ Well Covered**
 
-- Plugin installation from `npm pack` tarball: **PASS**
-- Plugin registration in `openclaw.json`: **PASS**
-- `vault-setup.sh` with sudo: **PASS** (system user, setuid binary, permissions all correct)
-- Full lifecycle (init → add → list → test): **PASS**
+Specific strengths: Multi-hook redundancy (same credential caught at up to 4 separate points), domain pinning for browser credentials, priority-based hook ordering.
 
 ---
 
-## Bugs Found and Fixed
+### Threat 2: Transcript Leakage
 
-### During Development
+**Threat:** Credentials persist in session transcript files on disk.
 
-| # | Bug | Severity | Fix | Commit |
-|---|-----|----------|-----|--------|
-| 1 | Tool name accepted with path traversal (`../escape`) | Critical | Added tool name validation: alphanumeric, hyphens, underscores, dots; max 64 chars; no slashes | `2957b77` |
-| 2 | Duplicate `vault add` silently overwrites | Medium | Added overwrite confirmation prompt (bypass with `--yes`) | `2957b77` |
-| 3 | SIGUSR2 `pgrep` fallback sent signals to wrong gateway when CLI runs with different `HOME` | High | Removed `pgrep` fallback — only use PID file for signal delivery | `160cdb7` |
-| 4 | `vault init` didn't report when already initialized | Low | Added idempotency message | `0efd712` |
-| 5 | Debug logging in `handleBeforeToolCall` included credential values | High | Removed debug logging; gated behind `OPENCLAW_VAULT_DEBUG` | `4ddbbf5` |
-| 6 | Vault directory created with 755 permissions | Medium | Changed to 700 | `4ddbbf5` |
-| 7 | Multi-line commands with comments broke glob matching | High | `matchesCommand()` now splits on newlines, discards comments, splits on `;`/`&&`/`||`, matches any segment | `7c7893d` |
-| 8 | Hook errors could crash the gateway | Critical | Added try-catch wrappers on all 5 hook handlers with `logVaultError()` | `92db1fc` |
+**Code Defenses:**
+- `src/index.ts` `handleToolResultPersist()` (lines 494-532): Scrubs tool results before transcript write
+- `src/index.ts` `handleBeforeMessageWrite()` (lines 546-588): Scrubs all messages before transcript write
+- Priority 1 ensures scrubbing runs before any other plugin writes to transcript
+- `src/index.ts` `handleMessageSending()` (lines 596-618): Final scrub before outbound delivery
 
-### During Validation
+**Test Coverage:**
+- `tests/hooks.test.ts`: Verifies scrubbing at before_message_write and tool_result_persist hooks
+- `tests/compaction-scrub.test.ts`: 12 tests verifying compacted content is scrubbed before re-entry to transcript
+- `tests/e2e.test.ts`: E2E verification of scrubbing pipeline
 
-| # | Issue | Resolution |
-|---|-------|-----------|
-| 9 | Config writes not atomic — crash during write could corrupt `tools.yaml` | Atomic write (`.tmp` + `rename`) + backup (`.bak`) + auto-recovery on corruption | `7f29cee` |
-| 10 | Credential cache had no TTL — rotated credentials served indefinitely | Added 15-minute TTL with `{value, cachedAt}` cache entries | `7f29cee` |
-| 11 | Error logging wrote to `/tmp/` (world-readable) | Changed to `~/.openclaw/vault/error.log` (user-private), gated behind `OPENCLAW_VAULT_DEBUG` | `7f29cee` |
-| 12 | Audit log grew unbounded | Added 5MB rotation with one backup file | `7f29cee` |
+**Rating: ✅ Well Covered**
 
 ---
 
-## Gap Analysis
+### Threat 3: Plugin-to-Plugin Leaks
 
-### Identified Gaps (All Closed)
+**Threat:** Another plugin sees credentials in params or results via shared hooks.
 
-| Gap | Description | Status | Evidence |
-|-----|-------------|--------|----------|
-| Audit JSON output | `vault logs --json` not verified | ✅ Closed | Live execution: valid JSONL with correct schema |
-| Audit tool filter | `vault logs --tool` not verified | ✅ Closed | Live execution: correctly isolates single-tool events |
-| Audit time filter | `vault logs --last` not verified | ✅ Closed | Live execution: duration parsing and cutoff work |
-| Exec injection | Controlled gateway injection test | ✅ Closed | `gh auth status` via gateway, audit entry at 16:56:47 |
-| Compound commands | Multi-segment command matching | ✅ Closed | `gh auth status; echo COMPOUND_DONE` via gateway, both parts executed |
-| Output scrubbing | End-to-end scrub verification | ✅ Closed | `vault test github` passes, scrubbing active |
-| Message scrubbing | Outbound message scrubbing | ✅ Closed | Code-path verification — uses identical `scrubText()` pipeline as write scrubbing (which was tested live) |
+**Code Defenses:**
+- `src/index.ts` line 668: Injection at priority 10 (runs last — other plugins see pre-injection params)
+- `src/index.ts` lines 671-674: Scrubbing at priority 1 (runs first — other plugins see scrubbed results)
+- Split-priority design documented in `register()` function
 
-### Code-Path Verification Rationale
+**Test Coverage:**
+- `tests/hooks.test.ts` "Hook priority validation": Contract test verifying SCRUB_PRIORITY < INJECT_PRIORITY
+- No integration test with actual mock plugins to verify priority isolation end-to-end
 
-The `message_sending` hook scrubbing was verified by code-path analysis rather than live testing because:
-1. The hook uses the same `scrubText()` + `scrubLiteralCredential()` pipeline as write/edit scrubbing
-2. Write/edit scrubbing was verified live (real credential scrubbed from file content)
-3. It is structurally impossible to both trigger and observe outbound message scrubbing from inside the same session
-4. The hook handler has the same try-catch wrapper as all other hooks
+**Rating: ⚠️ Partially Covered**
+
+Gap: Priority-based isolation is verified as a design contract but never tested with actual concurrent plugins. The test validates `1 < 10` arithmetically but doesn't exercise the OpenClaw hook dispatch order with competing plugins.
 
 ---
 
-## Known Limitations (Honest Assessment)
+### Threat 4: Sub-Agent Isolation
 
-### Security Limitations
+**Threat:** Sub-agents spawned by the main agent bypass scrubbing.
 
-1. **Machine-key entropy:** The encryption passphrase derives from `hostname:uid:installTimestamp`. An attacker with shell access knows hostname and UID. The install timestamp is the remaining entropy — stored in `.vault-meta.json` (mode 600). In binary mode, this file lives in `/var/lib/openclaw-vault/` (mode 700, owned by `openclaw-vault`), making it inaccessible to the agent.
+**Code Defenses:**
+- Hooks fire at gateway level for all sessions, including sub-agents (architectural property of OpenClaw, not vault-specific code)
+- Scrubbing uses the same `scrubText()` pipeline regardless of session type
 
-2. **Fail-open scrubbing:** On any error, hook handlers let content through unscrubbed. This means a bug in the scrubbing code could result in credential exposure. The trade-off: blocking all output on a bug would make the system unusable, and scrubbing bugs are low-probability (pure string manipulation).
+**Test Coverage:**
+- `tests/subagent-isolation.test.ts`: 8 tests verifying identical scrubbing behavior for main and sub-agent sessions
+- Tests simulate concurrent sub-agent sessions with different credentials
 
-3. **Scrubbing blind spots:** Credentials that are base64-encoded, URL-encoded, or split across multiple output chunks won't be caught by regex patterns. The literal matching layer (indexOf) catches exact values but not transformations.
+**Rating: ⚠️ Partially Covered**
 
-4. **No gateway log scanning:** If a credential leaks into the gateway's own logs (e.g., during an error), it persists on disk. A periodic log scanner is planned but not built.
-
-### Operational Limitations
-
-5. **Browser credentials not production-tested:** Cookie injection and password filling are covered by unit and integration tests but haven't been exercised through a real gateway + browser pipeline.
-
-6. **Single-user system vault:** `vault-setup.sh` migrates to a shared `/var/lib/openclaw-vault/`. Multiple users running setup would conflict. Needs per-user subdirectory or user-keyed separation.
-
-7. **Plugin install requires restart:** Hot-reload (SIGUSR2) handles config changes, but plugin code changes require a full gateway restart.
+Gap: Tests simulate the hook dispatch behavior but don't actually exercise the OpenClaw gateway's session routing. The tests call `scrubText()` directly and assert identical results, which is correct but doesn't prove that the gateway actually routes sub-agent tool calls through the same hooks. This is an architectural assumption that should be integration-tested with the actual gateway.
 
 ---
 
-## Validation Verdict
+### Threat 5: Credential Persistence in Memory Files
 
-**Status: VALIDATED for v1.0.0-beta.1 release**
+**Threat:** Agent writes credentials to workspace files via write/edit tools.
 
-- 536/540 automated tests pass (4 are CI timing thresholds, not bugs)
-- 57/58 manual test cases pass (1 justified skip — requires npm publish)
-- All 12 bugs found during testing were fixed and verified
-- All 7 identified gaps were closed with execution evidence
-- Production vault integrity maintained throughout all testing
-- No blocking issues remain
+**Code Defenses:**
+- `src/index.ts` `handleBeforeToolCall()` (lines 229-239): Intercepts `write` and `edit` tool calls, scrubs `content`, `newText`, `new_string` params
+- `src/index.ts` `scrubWriteEditContent()` (lines 205-226): Dedicated function for write/edit scrubbing
+- Both regex patterns and literal cached credentials are scrubbed from file content
 
-The "beta" designation reflects:
-- Browser credential support needs production validation
-- Single-user system vault limitation needs addressing before multi-user deployment
-- Performance thresholds need dedicated-hardware benchmarking
+**Test Coverage:**
+- `tests/write-edit-scrub.test.ts`: 13 tests for write content, edit newText, edit new_string, JSON content, YAML content, edge cases
+- `tests/adversarial.test.ts` "Attack Vector 5": Write/edit bypass attempts including heredoc, JSON escapes, base64
+
+**Rating: ✅ Well Covered**
+
+---
+
+### Threat 6: Environment Variable Exposure
+
+**Threat:** Credentials injected as env vars persist in gateway's process.env.
+
+**Code Defenses:**
+- `src/index.ts` line 393: `process.env[envKey] = resolved` — credentials ARE set on process.env during injection
+- `src/index.ts` lines 478-484: `handleAfterToolCall()` cleans up injected env vars via `delete process.env[envKey]`
+- `src/scrubber.ts` `scrubEnvVars()`: ENV_VAR_PATTERN catches `KEY=[VAULT:env-redacted] patterns in output
+
+**Test Coverage:**
+- `tests/adversarial.test.ts` "Attack Vector 4": Env variable scrubbing bypass tests
+- No test verifying the process.env injection/cleanup lifecycle
+
+**Rating: ⚠️ Partially Covered**
+
+**NEW FINDING — process.env contamination (see New Findings F-1 below)**
+
+---
+
+### Threat 7: Output Pattern Leakage
+
+**Threat:** Tool output contains credential-like strings (e.g., `set -x` echo, API responses with auth tokens).
+
+**Code Defenses:**
+- `src/scrubber.ts`: 3-layer pipeline — regex patterns, literal indexOf matching, env-var name matching
+- `src/scrubber.ts` `GLOBAL_SCRUB_PATTERNS`: Telegram bot tokens and Slack bot tokens scrubbed regardless of vault registration
+- `src/registry.ts`: 7 known tool patterns (Stripe, GitHub, Gumroad, OpenAI, Anthropic, Amazon, Netflix)
+
+**Test Coverage:**
+- `tests/adversarial.test.ts`: Encoded leakage (base64, URL-encode, hex, ROT13, reversed — all documented as known gaps)
+- `tests/false-positives.test.ts`: 11 tests ensuring UUIDs, git hashes, CSS colors, base64 data URIs are NOT over-scrubbed
+- `tests/adversarial.test.ts`: Concurrent scrubbing, massive output, pathological regex input
+
+**Rating: ✅ Well Covered**
+
+Known gaps (all documented in adversarial tests): base64-encoded, URL-encoded, hex-encoded, ROT13, reversed, split-across-calls, zero-width-character-injected credentials bypass scrubbing. These are acknowledged limitations of pattern-based scrubbing.
+
+---
+
+### Threat 8 (Implicit): Credential File Direct Read
+
+**Threat:** Agent reads encrypted files directly via `cat ~/.openclaw/vault/*.enc`.
+
+**Code Defenses:**
+- `src/crypto.ts`: AES-256-GCM encryption — files are binary ciphertext, not usable without key derivation
+- `bin/vault-setup.sh`: In binary mode, files owned by `openclaw-vault` user with mode 600 — agent gets `Permission denied`
+- `src/crypto.ts` `writeCredentialFile()`: Atomic write with 0o600 permissions
+
+**Test Coverage:**
+- `tests/crypto.test.ts`: 19 tests for encryption round-trip, wrong passphrase, tampered ciphertext, file permissions
+
+**Rating: ✅ Well Covered**
+
+---
+
+## New Findings
+
+### F-1: process.env Contamination During Injection (Medium)
+
+**Severity: Medium**
+**Location:** `src/index.ts`, line 393
+**Code:** `process.env[envKey] = resolved;`
+
+During credential injection for exec tool calls, the vault sets credentials directly on `process.env`. While cleanup happens in `handleAfterToolCall()`, there is a window between injection and cleanup where:
+
+1. The credential exists in the gateway's process environment
+2. Any other code running in the same event loop iteration (unlikely due to Node.js single-threaded model, but possible with microtask interleaving) could read it
+3. If the tool call throws an exception before `handleAfterToolCall()` runs, cleanup may not occur (mitigated by the try-catch in `handleAfterToolCall` — but if the *tool itself* crashes the process, env vars persist)
+4. The threat model states "Vault credentials were never there" regarding `process.env` — **this is inaccurate**
+
+**The command prepend is also notable:** Line 399 constructs:
+```typescript
+params.command = `${envExports.join(" && ")} && ${params.command}`;
+```
+This embeds the raw credential in the command string as `export KEY=[VAULT:env-redacted] && original_command`. The credential now exists in `params.command` which is passed to the exec tool. While the output is scrubbed, the credential momentarily exists in the tool call parameters.
+
+**Recommendation:**
+- Remove `process.env[envKey] = resolved` (line 393) — it's redundant with the `params.env` injection on line 391 and the command prepend on line 399
+- If process.env injection is necessary for some tools, document the race window in THREAT-MODEL.md
+
+**Test Gap:** No test verifies that `process.env` is clean during/after injection.
+
+---
+
+### F-2: No Path Traversal Validation in Rust Resolver (Medium)
+
+**Severity: Medium**
+**Location:** `resolver/src/main.rs`, `find_vault_paths()` function, line using `format!("{}.enc", tool_name)`
+
+The Rust resolver binary accepts a tool name from stdin JSON and constructs a file path:
+```rust
+let enc_path = dir.join(format!("{}.enc", tool_name));
+```
+
+The tool name is not validated for path traversal characters (`../`, `/`, etc.). While the TypeScript CLI validates tool names via `validateToolName()` in `src/cli.ts`, the Rust binary is invoked independently and runs with setuid permissions.
+
+**Attack scenario:** If an attacker can invoke the setuid resolver binary directly (bypassing the TypeScript layer), they could request:
+```json
+{"tool": "../../etc/shadow", "context": "exec", "command": "test"}
+```
+This would attempt to read `/var/lib/openclaw-vault/../../etc/shadow.enc` = `/etc/shadow.enc` — which likely doesn't exist, and if it did, decryption would fail. However, the existence check itself leaks information (file existence oracle). On systems where `.enc` files exist outside the vault, this could be exploited.
+
+**Recommendation:**
+- Add tool name validation in `main.rs` before path construction: reject names containing `/`, `\`, `..`, or starting with `.`
+- This is defense-in-depth — the setuid binary should not trust its input
+
+---
+
+### F-3: Credential Cache Has No Maximum Size (Low)
+
+**Severity: Low**
+**Location:** `src/index.ts`, `VaultState.credentialCache` (line 69)
+
+The `credentialCache` Map grows without bound. Entries are evicted only when accessed after TTL expiry. There is no maximum cache size, no periodic sweep, and no cache clearing on SIGUSR2 reload (the cache is intentionally preserved across reloads if the passphrase hasn't changed — line 685).
+
+**Impact:** All decrypted credential values persist in process memory for 15 minutes. In a system with many tools, this increases the attack surface for memory-based credential extraction.
+
+**Recommendation:**
+- Add a maximum cache size (e.g., 100 entries)
+- Consider a periodic sweep (e.g., every 5 minutes) to evict expired entries proactively
+- On `vault remove`, evict the corresponding cache entry (currently not done)
+
+---
+
+### F-4: Concurrent Resolution Tests Are Mocked (Low)
+
+**Severity: Low**
+**Location:** `tests/concurrent.test.ts`
+
+All 5 concurrent resolution tests use `simulateCredentialResolution()` — a mock function that returns hardcoded credentials after a `setTimeout`. These tests verify that `Promise.all()` works correctly (which is a JavaScript runtime guarantee, not a vault property).
+
+The tests do NOT exercise:
+- Real Argon2id derivation under concurrent load
+- File I/O contention when multiple resolutions read the same `.enc` file simultaneously
+- Credential cache behavior under concurrent access (Map operations are synchronous in V8, so this is actually safe, but it's not tested)
+
+**Recommendation:**
+- Add at least one concurrent test that uses real `readCredentialFile()` with actual encrypted files
+- The existing mocked tests can remain as documentation of the concurrency contract
+
+---
+
+### F-5: Fail-Open Error Handling Lacks Alerting (Low)
+
+**Severity: Low**
+**Location:** `src/index.ts`, all hook handlers (lines 442, 486, 530, 586, 616)
+
+All hook handlers catch errors and return void (fail-open). The `logVaultError()` function only writes to `error.log` when `OPENCLAW_VAULT_DEBUG` is set. In production, a scrubbing failure would be completely silent — no console output, no audit log entry, no notification.
+
+**Impact:** If a scrubbing bug causes an error, credentials could leak through unscrubbed content with no indication to the operator.
+
+**Recommendation:**
+- Always log scrubbing errors to the audit log (not just when debug mode is enabled)
+- Consider a `console.warn` for scrubbing failures in production — these are security events that warrant visibility
+- The `logVaultError` function already exists; it should be augmented to always write to the audit log regardless of debug mode
+
+---
+
+### F-6: SIGUSR2 Hot-Reload Preserves Stale Literal Credentials (Low)
+
+**Severity: Low**
+**Location:** `src/index.ts`, SIGUSR2 handler (lines 677-686); `src/scrubber.ts`, module-level `literalCredentials` Map
+
+When the vault config is reloaded via SIGUSR2, the credential cache is preserved (line 685: `newState.credentialCache = state.credentialCache`), but the module-level `literalCredentials` Map in `scrubber.ts` is never cleared. This means:
+- Credentials that were removed from the vault remain in the literal scrub set
+- This is actually a *positive* security property (over-scrubbing is safer than under-scrubbing)
+- However, it means the literal match set grows monotonically and is never pruned
+
+**Recommendation:** This is informational. The behavior is security-positive (scrubs more, not less). Document it.
+
+---
+
+### F-7: Global Scrub Patterns Missing Common Providers (Informational)
+
+**Severity: Informational**
+**Location:** `src/scrubber.ts`, `GLOBAL_SCRUB_PATTERNS` (lines 18-22)
+
+Only Telegram bot tokens and Slack bot tokens have global scrub patterns. Other common credential formats that could appear in agent output are not covered globally:
+- AWS access keys (`AKIA[0-9A-Z]{16}`)
+- Google Cloud service account JSON
+- Database connection strings with embedded passwords
+- Bearer tokens in HTTP headers
+
+**Recommendation:** Consider adding global patterns for AWS, GCP, and common JWT bearer patterns. These would provide defense-in-depth even for credentials not registered in the vault.
+
+---
+
+### F-8: Multi-Command Injection May Interact with Shell Metacharacters (Informational)
+
+**Severity: Informational**
+**Location:** `src/index.ts`, lines 396-399
+
+The command prepend logic constructs:
+```typescript
+params.command = `${envExports.join(" && ")} && ${params.command}`;
+```
+
+The credential value is escaped with single-quote shell escaping (line 397):
+```typescript
+const escaped = resolved.replace(/'/g, "'\\''");
+envExports.push(`export ${envKey}='${escaped}'`);
+```
+
+This escaping handles single quotes correctly for bash. However:
+- If the exec tool uses a different shell (e.g., sh, zsh, fish), the escaping may behave differently
+- If the credential contains null bytes, backslashes, or other special characters, edge cases may arise
+- The `envKey` is not escaped — a malicious injection rule with a crafted env var name could break the shell syntax
+
+**Recommendation:** The current escaping is adequate for standard bash usage. Consider documenting the shell assumption.
+
+---
+
+## Gaps & Recommendations
+
+### Security Gaps
+
+| # | Gap | Severity | Recommendation |
+|---|-----|----------|---------------|
+| G-1 | process.env contamination during injection | Medium | Remove redundant `process.env` assignment (line 393) or document the race window |
+| G-2 | Rust resolver lacks tool name validation | Medium | Add path traversal validation before file path construction |
+| G-3 | No test for process.env cleanup lifecycle | Medium | Add test verifying env vars are cleaned after tool call completes |
+| G-4 | No integration test for plugin priority isolation | Low | Add mock-plugin test verifying injection/scrubbing priority ordering |
+| G-5 | Concurrent tests are fully mocked | Low | Add at least one real concurrent crypto test |
+| G-6 | Scrubbing errors silent in production | Low | Always log scrubbing errors to audit log |
+| G-7 | No gateway log scanning for leaked credentials | Low | Planned but not built (acknowledged in prior audit) |
+| G-8 | vault_status tool doesn't verify credential file integrity | Informational | Add optional integrity check (attempt decrypt, report failures) |
+
+### Positive Findings Worth Preserving
+
+- **Atomic writes everywhere** — both `writeCredentialFile()` and `writeConfig()` use tmp+rename pattern
+- **Secure delete on remove** — `removeCredentialFile()` overwrites with random data before unlinking
+- **Config backup and recovery** — `readConfig()` auto-recovers from corrupted tools.yaml using `.bak` file
+- **Tool name validation** — comprehensive validation in `cli.ts` prevents path traversal via the CLI path
+- **Audit log rotation** — 5MB cap prevents unbounded growth
+- **Setuid + seccomp + capability dropping** — Rust resolver has defense-in-depth OS isolation
+- **False positive test corpus** — dedicated tests prevent over-scrubbing of UUIDs, git hashes, CSS colors
+
+---
+
+## Dependency Analysis
+
+### Production Dependencies (2)
+
+| Package | Version | Risk | Notes |
+|---------|---------|------|-------|
+| `argon2` | ^0.41.1 | **Low** | Native module (N-API). Well-maintained binding to the reference C implementation. No known vulnerabilities. Handles the most security-critical operation (key derivation). |
+| `yaml` | ^2.7.0 | **Low** | Pure JavaScript YAML parser. Used only for config file read/write. No known vulnerabilities. |
+
+### Dev Dependencies (3)
+
+| Package | Version | Risk | Notes |
+|---------|---------|------|-------|
+| `typescript` | ^5.7.0 | **Negligible** | Build-time only |
+| `vitest` | ^3.0.0 | **Negligible** | Test-time only |
+| `@types/node` | ^22.0.0 | **Negligible** | Build-time only |
+
+### Rust Dependencies (Resolver)
+
+| Crate | Version | Risk | Notes |
+|-------|---------|------|-------|
+| `aes-gcm` | 0.10 | **Low** | RustCrypto project, well-audited |
+| `argon2` | 0.5 | **Low** | Pure Rust Argon2id implementation |
+| `serde`/`serde_json` | 1.x | **Low** | De facto standard serialization |
+| `sha2` | 0.10 | **Low** | RustCrypto SHA-256 |
+| `seccompiler` | 0.4 | **Low** | AWS Firecracker project, well-maintained |
+| `caps` | 0.5 | **Low** | Linux capabilities management |
+| `libc` | 0.2 | **Low** | Standard FFI bindings |
+| `hostname` | 0.4 | **Low** | OS hostname retrieval |
+| `hex` | 0.4 | **Low** | Hex encoding/decoding |
+
+### npm Audit Results
+
+**0 vulnerabilities** across 6 production and 103 dev dependencies (as of 2026-03-12).
+
+### Supply Chain Assessment
+
+- **Minimal dependency surface:** Only 2 production dependencies (argon2 + yaml). The attack surface for supply-chain compromise is very small.
+- **No transitive production dependencies beyond argon2's N-API bindings.** The yaml package is pure JavaScript with zero dependencies.
+- **Rust resolver uses well-established crates** from RustCrypto and AWS Firecracker ecosystems.
+- **CI pipeline** uses `npm ci` (locked dependencies) and caches Cargo registry.
+- **`package.json` uses caret ranges** (`^0.41.1`) — `npm ci` with lockfile mitigates this, but without a lockfile, minor version bumps could introduce changes.
+
+---
+
+## Test Coverage Assessment
+
+### Coverage by Component
+
+| Component | Source File | Test File(s) | Tests | Coverage Notes |
+|-----------|-----------|------------|-------|----------------|
+| Encryption | `src/crypto.ts` | `tests/crypto.test.ts` | 19 | Excellent — round-trip, wrong passphrase, tampered data, file perms, secure delete |
+| Scrubbing | `src/scrubber.ts` | `tests/adversarial.test.ts`, `tests/hooks.test.ts`, `tests/write-edit-scrub.test.ts`, `tests/compaction-scrub.test.ts`, `tests/false-positives.test.ts` | ~150+ | Excellent — 3-layer pipeline, adversarial bypass attempts, false positive corpus |
+| Registry | `src/registry.ts` | (inline in other test files) | ~22 | Good — glob matching, command matching, URL matching |
+| Config | `src/config.ts` | (inline in e2e tests) | ~10 | Adequate — read/write/atomic, meta file |
+| Browser | `src/browser.ts` | `tests/browser.test.ts` | 94 | Excellent — domain pinning, cookies, tracking filters, password resolution |
+| Audit | `src/audit.ts` | (inline in hook tests) | ~29 | Good — JSONL append, rotation, filtered queries |
+| CLI | `src/cli.ts` | (manual testing per prior audit) | Manual | Adequate — tested via manual simulation, tool name validation unit tested |
+| Resolver | `resolver/src/main.rs` | Inline Rust tests + `tests/e2e.test.ts`, `tests/cross-compat.test.ts` | ~23 | Good — round-trip, cross-language compat, error handling |
+| Hooks | `src/index.ts` | `tests/hooks.test.ts`, `tests/e2e.test.ts` | ~27 | Adequate — hook registration tested indirectly, scrubbing pipeline tested directly |
+| Guesser | `src/guesser.ts` | (separate guesser test file) | ~61 | Good — prefix detection, JWT, JSON, password, generic API key |
+| Vault Status | `src/vault-status.ts` | (tested via CLI manual) | Minimal | Gap — no dedicated unit tests for `computeVaultStatus()` |
+
+### Missing Test Cases
+
+1. **process.env injection/cleanup lifecycle** — no test verifies env vars are set and then cleaned
+2. **Concurrent resolution with real crypto** — all concurrent tests use mocks
+3. **Credential cache TTL enforcement** — no test verifies that expired cache entries are actually re-derived
+4. **SIGUSR2 hot-reload** — no test verifies config reload behavior
+5. **Vault status tool** — no unit test for `computeVaultStatus()` or `createVaultStatusTool().execute()`
+6. **Error path in hooks** — no test verifies fail-open behavior when scrubbing throws
+7. **Audit log rotation** — no test for the 5MB rotation logic in `writeAuditEvent()`
+8. **Tool name validation in Rust resolver** — (doesn't exist in code, should be added and tested)
+
+---
+
+## Overall Risk Rating
+
+**LOW-MEDIUM**
+
+The vault provides strong security for its intended threat model. The cryptographic primitives are correctly implemented, the scrubbing pipeline is comprehensive with redundant layers, and the test suite is thorough with dedicated adversarial coverage.
+
+The residual risks are:
+- **Medium:** process.env contamination and Rust resolver path validation gaps are actionable findings that should be addressed before v1.0 stable
+- **Low:** Mocked concurrent tests, silent scrubbing errors, and missing vault_status tests are quality gaps, not security vulnerabilities
+- **Informational:** The documented scrubbing blind spots (base64, URL-encoding, split credentials) are inherent limitations of pattern-based scrubbing and are clearly acknowledged
+
+The codebase shows evidence of security-conscious development: atomic writes, secure delete, fail-open with explicit rationale, priority-based hook isolation, and comprehensive adversarial testing. The threat model is honest about limitations and does not overstate the vault's protections.
+
+---
+
+## Changes from Prior Audit
+
+Comparison with the prior audit dated 2026-03-11.
+
+### What's New in This Audit
+
+- **F-1: process.env contamination finding** — Not identified in the prior audit. The prior audit did not examine the race window between credential injection into `process.env` and cleanup in `after_tool_call`. This is the most significant new finding.
+- **F-2: Rust resolver path traversal** — Not identified in the prior audit. The resolver binary's input validation was not assessed.
+- **F-3: Credential cache sizing** — New finding, informational.
+- **F-5: Fail-open error handling alerting gap** — Prior audit noted fail-open as a design choice. This audit adds that production failures are completely silent (no audit log entry without debug mode).
+- **F-7: Global scrub patterns coverage** — New informational finding.
+- **F-8: Multi-command shell escaping** — New informational finding.
+- **Comprehensive dependency analysis** — Prior audit did not include npm audit results or Rust crate assessment.
+- **Rust resolver source review** — This audit includes line-by-line review of `resolver/src/main.rs` including seccomp filter, capability dropping, and path resolution.
+
+### What Improved Since Prior Audit
+
+- All 12 bugs identified in the prior audit remain fixed (verified by code inspection):
+  - Bug #1: Tool name validation (confirmed in `cli.ts` `validateToolName()`)
+  - Bug #3: SIGUSR2 pgrep fallback removed (confirmed in `config.ts` `signalGatewayReload()`)
+  - Bug #5: Debug logging gated behind OPENCLAW_VAULT_DEBUG (confirmed in `index.ts` `logVaultError()`)
+  - Bug #7: Multi-line command matching (confirmed in `registry.ts` `matchesCommand()`)
+  - Bug #8: Try-catch on all hooks (confirmed in `index.ts` — 5 handler functions wrapped)
+  - Bug #9: Atomic config writes (confirmed in `config.ts` `writeConfig()`)
+  - Bug #10: Cache TTL (confirmed in `index.ts` `CACHE_TTL_MS = 15 * 60 * 1000`)
+  - Bug #11: Error log path (confirmed in `index.ts` `logVaultError()` — uses `~/.openclaw/vault/error.log`)
+  - Bug #12: Audit log rotation (confirmed in `audit.ts` `MAX_AUDIT_LOG_BYTES = 5 * 1024 * 1024`)
+
+### What Regressed
+
+- Nothing regressed. All prior fixes are intact.
+
+### What Was Removed
+
+- The prior audit's "Gap Analysis" section listed 7 gaps all marked "Closed". This audit replaces that section with a new gap analysis reflecting current findings.
+- The prior audit's manual testing section (58 test cases) is not reproduced here as it represents a point-in-time validation. The automated test suite (540 tests) provides ongoing coverage.
+
+### Status of Prior Known Limitations
+
+| Prior Limitation | Current Status |
+|-----------------|----------------|
+| Machine-key entropy | Unchanged — still acknowledged |
+| Fail-open scrubbing | Unchanged — this audit adds alerting gap (F-5) |
+| Scrubbing blind spots (base64, URL-encode, split) | Unchanged — all documented in adversarial tests |
+| No gateway log scanning | Unchanged — still not built |
+| Browser credentials not production-tested | Unchanged — still unit/integration tested only |
+| Single-user system vault | Unchanged — needs per-user separation |
+| Plugin install requires restart | Unchanged — SIGUSR2 handles config only |
