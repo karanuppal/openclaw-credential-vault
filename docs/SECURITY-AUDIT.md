@@ -1,9 +1,9 @@
 # Security Audit
 
 > Comprehensive security audit of the OpenClaw Credential Vault plugin.
-> Audit date: 2026-03-12
+> Last updated: 2026-03-12 (post-remediation: params.env + Perl scrubber)
 > Auditor: Automated security engineering review (agentic)
-> Scope: Full source code, tests, dependencies, Rust resolver, CI pipeline
+> Scope: Full source code, injection path, scrubbing pipeline, tests, dependencies, Rust resolver
 
 ---
 
@@ -15,13 +15,21 @@ The OpenClaw Credential Vault implements a well-designed defense-in-depth archit
 
 The vault is suitable for its stated purpose (beta release for credential management in AI agent frameworks). The primary residual risks are:
 
-1. **process.env contamination during injection** — credentials briefly exist in the gateway process environment (Medium severity)
+1. ~~**process.env contamination during injection**~~ — **RESOLVED** (commit 630c7a5). Credentials now injected via `params.env` only. No `process.env` mutation.
 2. **Machine-key derivation uses low-entropy inputs** (hostname, uid, timestamp) — encryption alone is insufficient against a local attacker. Binary mode mitigates by adding OS-user file isolation, making encrypted files inaccessible regardless of key strength (Medium severity)
 3. **Fail-open scrubbing** — design choice with acceptable trade-offs but creates a real exposure window on scrubber bugs (Medium severity)
 4. **No path traversal validation in Rust resolver** — setuid binary accepts arbitrary tool names from stdin (Medium severity)
 5. **Mocked concurrent test coverage** — concurrent resolution tests don't exercise real crypto/IO paths (Low severity)
 
-No critical vulnerabilities were found. All previously identified bugs (12 from the prior audit) remain fixed. The test suite is comprehensive at 576 tests across 29 files with dedicated adversarial, false-positive, sub-agent isolation, and resolver versioning coverage.
+No critical vulnerabilities were found. All previously identified bugs (12 from the prior audit) remain fixed. The test suite is comprehensive at 607 tests across 30 files with dedicated adversarial, false-positive, sub-agent isolation, resolver versioning, and Perl scrubber coverage.
+
+### Post-Remediation Changes (2026-03-12)
+
+Major security improvements implemented and verified:
+- **params.env-only injection** — credentials no longer set on `process.env` or prepended to command strings
+- **Perl stdout scrubber** — subprocess output piped through `perl -pe` with base64-encoded credential replacement before exec captures it
+- **PTY mode verified safe** — pipe sits outside PTY boundary, scrubber works correctly (3 tests)
+- **30 Perl scrubber tests** — basic, exfiltration, exit codes, multi-credential, PTY, system compat
 
 ---
 
@@ -338,6 +346,46 @@ The Perl stdout scrubber (implemented via `before_tool_call` hook) wraps exec co
 
 ---
 
+## Perl Scrubber Vulnerability Analysis
+
+### Injection Path Review
+
+Credentials are injected exclusively via `params.env`. Confirmed by `grep -n 'process\.env\[' src/index.ts` returning zero matches. The Perl scrubber uses base64-encoded credentials decoded at runtime via `MIME::Base64`, with `\Q...\E` literal quoting for safe regex matching.
+
+### Perl Script Injection via Base64 — NOT VULNERABLE ✅
+
+Base64 output alphabet `[A-Za-z0-9+/=]` contains no Perl metacharacters. The base64 string is placed inside Perl double quotes where only `$`, `@`, `\`, and `"` trigger interpolation. None appear in base64 output.
+
+### Perl Script Injection via Tool Name — NOT VULNERABLE ✅
+
+Tool names validated to `^[a-zA-Z0-9][a-zA-Z0-9._-]*$`. The replacement string `[VAULT:toolname]` goes into Perl double quotes. Characters `.`, `-`, `[`, `]`, `:` are all literal in Perl double-quoted strings.
+
+### Base64 Encoding Exploits — NOT VULNERABLE ✅
+
+`Buffer.from(credential).toString("base64")` (Node.js) and `decode_base64()` (Perl MIME::Base64) are standard RFC 4648 implementations. Round-trip correctness verified by tests including credentials with special characters (`$`, `'`, `"`, `\`, `|`).
+
+### Group Breakout via Crafted Command — LOW-MEDIUM
+
+The Perl scrubber wraps commands as `{ COMMAND ; } 2>&1 | perl -pe '...'`. If the LLM crafts a command containing `; }` (e.g., `echo safe ; } ; printenv SECRET ; { :`), the output from the middle commands bypasses the Perl pipe. This is a variant of the same fundamental limitation as direct subprocess exfiltration (Threat 1) — the LLM controls the command and the subprocess has the credential.
+
+### PTY Mode Compatibility — VERIFIED SAFE ✅
+
+3 PTY-mode tests added (commit 9889ce5) using `script -qc` (real PTY allocation). All pass. The pipe sits *outside* the PTY boundary: `{ script -qc 'command' /dev/null ; } 2>&1 | perl -pe '...'`. PTY output flows through the scrubber correctly.
+
+### Empty Credential in Perl Scrubber — LOW
+
+If a credential resolves to an empty or very short string, `s/\Q\E//g` matches the empty string at every position, potentially corrupting output. Unlikely in practice (empty credentials fail authentication), but a min-length guard should be added.
+
+### Edge Cases
+
+| Edge Case | Behavior | Severity |
+|-----------|----------|----------|
+| Credential with newlines | `perl -pe` processes line-by-line; multiline credential won't match across boundaries | Low |
+| Very long credentials | Base64 increases length ~33%; could exceed ARG_MAX (~2MB) on extreme cases | Informational |
+| File redirect bypass | `echo $SECRET > /tmp/file` writes before pipe sees it | Low (requires multi-step attack) |
+
+---
+
 ## Gaps & Recommendations
 
 ### Security Gaps
@@ -430,7 +478,7 @@ The Perl stdout scrubber (implemented via `before_tool_call` hook) wraps exec co
 
 ### Missing Test Cases
 
-1. **process.env injection/cleanup lifecycle** — no test verifies env vars are set and then cleaned
+1. ~~**process.env injection/cleanup lifecycle**~~ — RESOLVED: process.env is no longer used for injection
 2. **Concurrent resolution with real crypto** — all concurrent tests use mocks
 3. **Credential cache TTL enforcement** — no test verifies that expired cache entries are actually re-derived
 4. **SIGUSR2 hot-reload** — no test verifies config reload behavior
@@ -448,11 +496,12 @@ The Perl stdout scrubber (implemented via `before_tool_call` hook) wraps exec co
 The vault provides strong security for its intended threat model. The cryptographic primitives are correctly implemented, the scrubbing pipeline is comprehensive with redundant layers, and the test suite is thorough with dedicated adversarial coverage.
 
 The residual risks are:
-- **Medium:** process.env contamination and Rust resolver path validation gaps are actionable findings that should be addressed before v1.0 stable
+- **Medium:** Rust resolver path validation gap is an actionable finding that should be addressed before v1.0 stable
+- **Medium (mitigated):** LLM exfiltration of tool output — Perl scrubber catches primary vectors; file redirect and group breakout are known bypass paths requiring deliberate multi-step attacks
 - **Low:** Mocked concurrent tests, silent scrubbing errors, and missing vault_status tests are quality gaps, not security vulnerabilities
 - **Informational:** The documented scrubbing blind spots (base64, URL-encoding, split credentials) are inherent limitations of pattern-based scrubbing and are clearly acknowledged
 
-The codebase shows evidence of security-conscious development: atomic writes, secure delete, fail-open with explicit rationale, priority-based hook isolation, and comprehensive adversarial testing. The threat model is honest about limitations and does not overstate the vault's protections.
+The codebase shows evidence of security-conscious development: atomic writes, secure delete, fail-open with explicit rationale, priority-based hook isolation, params.env-only credential injection, Perl stdout scrubber, and comprehensive adversarial testing. The threat model is honest about limitations and does not overstate the vault's protections.
 
 ---
 
@@ -503,7 +552,7 @@ The following changes were implemented during the doc review session after the a
 ### What Was Removed
 
 - The prior audit's "Gap Analysis" section listed 7 gaps all marked "Closed". This audit replaces that section with a new gap analysis reflecting current findings.
-- The prior audit's manual testing section (58 test cases) is not reproduced here as it represents a point-in-time validation. The automated test suite (576 tests) provides ongoing coverage.
+- The prior audit's manual testing section (58 test cases) is not reproduced here as it represents a point-in-time validation. The automated test suite (607 tests across 30 files) provides ongoing coverage.
 
 ### Status of Prior Known Limitations
 
