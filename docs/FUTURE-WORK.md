@@ -23,15 +23,6 @@ Tool "gumroad-password" not found. Similar tools in vault:
 **Current behavior:** `--last` only accepts a duration string (e.g. `24h`, `7d`, `30m`).
 **Desired behavior:** Also accept a plain number — `--last 10` shows the 10 most recent log entries regardless of time.
 
-### 3. Audit log display truncates commands
-**Trigger:** `openclaw vault logs` — commands cut off mid-word
-**Current behavior:** Command field is truncated at a fixed width. `git push origin main` shows as `gi`.
-**Raw log has full data** — this is display-only, not a storage issue.
-**Desired behavior:** Either:
-  - Wrap long commands (preferred)
-  - Truncate with `...` at a word boundary so it's at least obvious it's truncated
-  - Add `--wide` or `--full` flag to disable truncation
-
 ---
 
 *More items will be added as testing continues.*
