@@ -143,7 +143,7 @@ The wrapped command string contains only the base64-encoded credential, never pl
 
 ### 3.3 Untested Security-Critical Paths
 
-1. **PTY mode (`pty: true`) with Perl scrubber** — The command wrapping modifies `params.command`, but no test verifies this works correctly when exec uses a pseudo-terminal. PTY may not respect the pipe architecture.
+1. ~~**PTY mode (`pty: true`) with Perl scrubber**~~ — RESOLVED: 3 PTY tests added (commit 9889ce5), all pass. Pipe sits outside PTY boundary.
 2. **Empty/short credential in Perl scrubber** — The `addLiteralCredential` 4-char minimum doesn't protect the Perl construction path.
 3. **Group breakout via crafted command** — No test for commands containing `; }` that break out of the `{ ... }` grouping (see §5.1).
 4. **SIGUSR2 hot-reload behavior** — Not tested.
@@ -187,16 +187,13 @@ The wrapped command string contains only the base64-encoded credential, never pl
 
 **Recommendation:** Document this limitation alongside the file-redirect bypass in the threat model. Consider using `bash -c` with proper argument quoting instead of `{ ... }` grouping, though this has its own escaping challenges.
 
-### 5.2 PTY Mode Compatibility — MEDIUM (untested)
+### 5.2 PTY Mode Compatibility — RESOLVED (tested, not an issue)
 
-**Finding:** When `pty: true` is set on an exec call, the exec tool allocates a pseudo-terminal. The vault modifies `params.command` to include the Perl pipe, but PTY execution may differ:
-- PTY mode may use `node-pty` or similar, which spawns a shell differently
-- The pipe through Perl may not function correctly in PTY context
-- If the Perl pipe silently fails, credentials appear unscrubbed in output
+**Original concern:** When `pty: true` is set on an exec call, the exec tool allocates a pseudo-terminal. The Perl pipe scrubber might not function correctly in PTY context.
 
-**Severity:** MEDIUM. PTY mode is used for interactive commands (coding agents, terminal UIs). If vault-injected commands are used with PTY, the scrubber may be silently bypassed.
+**Resolution (commit 9889ce5):** 3 PTY-mode tests added using `script -qc` (which allocates a real PTY). All pass. The Perl scrubber works correctly because the pipe sits *outside* the PTY boundary: `{ script -qc 'command' /dev/null ; } 2>&1 | perl -pe '...'`. PTY output still flows through the perl replacement before exec captures it.
 
-**Recommendation:** Add integration test for PTY mode + Perl scrubber. If PTY can't support the pipe architecture, skip the scrubber wrapping for PTY calls and document the limitation.
+**Severity:** ~~MEDIUM~~ → NOT AN ISSUE. Verified with single-credential, env var exfiltration, and multi-credential PTY tests.
 
 ### 5.3 Perl Script Injection via Base64 — NOT VULNERABLE ✅
 
@@ -255,7 +252,7 @@ Tool names validated to `^[a-zA-Z0-9][a-zA-Z0-9._-]*$`. The replacement string `
 
 ### Residual Risks
 
-- **PTY mode is untested with the scrubber** (Medium — §5.2)
+- ~~**PTY mode is untested with the scrubber** (Medium — §5.2)~~ → RESOLVED, not an issue
 - **Group breakout via crafted commands** (Low-Medium — §5.1)
 - **Rust resolver path traversal** (Medium — unchanged from prior audit)
 - **Fail-open errors are silent in production** (Low — unchanged)
@@ -263,9 +260,9 @@ Tool names validated to `^[a-zA-Z0-9][a-zA-Z0-9._-]*$`. The replacement string `
 
 ### Recommendations (Priority Order)
 
-1. **Add PTY mode test** for Perl scrubber — verify pipe works or document limitation
+1. ~~**Add PTY mode test**~~ → DONE (commit 9889ce5)
 2. **Add min-length guard** in Perl scrubber construction (skip credentials < 4 chars)
-3. **Update SECURITY-AUDIT.md** — remove stale F-8 finding, update F-1 recommendation text
+3. ~~**Update SECURITY-AUDIT.md** — remove stale F-8 finding, update F-1 recommendation text~~ → DONE (commit 80be8c2)
 4. **Add Rust resolver tool name validation** (path traversal — carried from prior audit)
 5. **Relax performance test thresholds** — 10ms for 1MB is aggressive for CI; consider 25ms
 

@@ -1,6 +1,6 @@
 # Testing
 
-> 29 test files, 576 tests. Here's what they cover and how to run them.
+> 30 test files, 607 tests. Here's what they cover and how to run them.
 
 ---
 
@@ -448,3 +448,28 @@ npx vitest run --reporter=verbose
 - Each test file creates and tears down its own vault instance
 - The 4 performance test failures on shared VMs are expected and don't indicate bugs
 - Total test runtime: ~40 seconds (dominated by Argon2id derivation in crypto tests)
+
+---
+
+## Perl Stdout Scrubber Tests
+
+```bash
+npx vitest run tests/perl-scrubber.test.ts
+```
+
+**30 tests** covering:
+
+- **Basic scrubbing** (5): echo, printenv, multi-occurrence, multi-line, passthrough
+- **Exfiltration scenarios** (3): jq env access, stderr capture, semicolon-separated commands
+- **Exit code preservation** (3): success, failure, specific exit codes via `set -o pipefail`
+- **Security edge cases** (5): file redirect bypass (known limitation), empty output, large output (10k lines), special characters via base64, command wrapping validation
+- **Multi-credential scrubbing** (8): 2-3 credentials on same/different lines, repeated occurrences, special chars, exit code preservation, empty output, command string verification
+- **PTY mode** (3): echo through PTY, env var exfiltration through PTY, multi-credential through PTY — all pass, pipe sits outside PTY boundary
+- **System compatibility** (2): perl availability, MIME::Base64 module
+
+### Key Design Decisions
+
+- Tests use `execSync` with `/bin/bash` to simulate the exact command transformation the `before_tool_call` hook performs
+- Credentials are base64-encoded in test perl commands, matching production behavior
+- PTY emulation uses `script -qc` which allocates a real pseudo-terminal
+- File redirect bypass is explicitly tested and documented as a known limitation

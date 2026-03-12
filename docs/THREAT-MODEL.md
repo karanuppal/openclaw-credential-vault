@@ -75,7 +75,7 @@ The vault's job is to minimize credential exposure in the agent's context window
 - A Perl stdout scrubber pipes subprocess output through credential value replacement before the exec tool captures it. Credentials are base64-encoded in the perl command (never plaintext in the command string).
 - The env-var name scrubbing layer catches `TOKEN=[VAULT:env-redacted] `SECRET=[VAULT:env-redacted] `KEY=[VAULT:env-redacted] patterns in any output.
 
-**Status:** RESOLVED. The gateway process environment is never contaminated with credentials (F-1 fixed). Subprocess stdout exfiltration is mitigated by the Perl scrubber. Known limitation: file redirect bypass (`echo $SECRET > /tmp/file`) is not caught by the pipe scrubber — this requires OS-level sandboxing.
+**Status:** RESOLVED. The gateway process environment is never contaminated with credentials (F-1 fixed). Subprocess stdout exfiltration is mitigated by the Perl scrubber. PTY mode (`pty: true`) is also covered — the pipe sits outside the PTY boundary, so PTY output flows through the scrubber correctly (verified with tests, commit 9889ce5). Known limitation: file redirect bypass (`echo $SECRET > /tmp/file`) is not caught by the pipe scrubber — this requires OS-level sandboxing.
 
 #### 7. Output Pattern Leakage
 
