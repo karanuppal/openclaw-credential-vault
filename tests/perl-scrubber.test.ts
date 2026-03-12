@@ -299,4 +299,43 @@ describe("Perl stdout scrubber", () => {
       expect(result.stdout).toBe("ok");
     });
   });
+
+  describe("PTY mode behavior", () => {
+    // PTY mode (pty:true) allocates a pseudo-terminal. The concern is that
+    // our pipe-based scrubber may not work when the subprocess has a PTY,
+    // since PTY output handling differs from plain pipe stdout.
+
+    it("should scrub credential when command runs inside script (PTY emulation)", () => {
+      // `script -qc` allocates a real PTY for the command, similar to exec pty:true
+      const innerCmd = `echo "${SECRET}"`;
+      const cmd = wrapCommand(`script -qc '${innerCmd}' /dev/null`);
+      const result = run(cmd, {});
+      // script output may include carriage returns from PTY
+      const cleaned = result.stdout.replace(/\r/g, "");
+      expect(cleaned).toContain(REPLACEMENT);
+      expect(cleaned).not.toContain(SECRET);
+    });
+
+    it("should scrub credential from PTY env var exfiltration", () => {
+      const env = { GH_TOKEN: SECRET };
+      const innerCmd = `printenv GH_TOKEN`;
+      const cmd = wrapCommand(`script -qc '${innerCmd}' /dev/null`);
+      const result = run(cmd, env);
+      const cleaned = result.stdout.replace(/\r/g, "");
+      expect(cleaned).toContain(REPLACEMENT);
+      expect(cleaned).not.toContain(SECRET);
+    });
+
+    it("should scrub multiple credentials through PTY", () => {
+      const env = { CRED1: SECRET, CRED2: SECRET2 };
+      const innerCmd = `echo "$CRED1 $CRED2"`;
+      const cmd = wrapCommand(`script -qc '${innerCmd}' /dev/null`, multiPerlScript);
+      const result = run(cmd, env);
+      const cleaned = result.stdout.replace(/\r/g, "");
+      expect(cleaned).not.toContain(SECRET);
+      expect(cleaned).not.toContain(SECRET2);
+      expect(cleaned).toContain(REPLACEMENT);
+      expect(cleaned).toContain(REPLACEMENT2);
+    });
+  });
 });
