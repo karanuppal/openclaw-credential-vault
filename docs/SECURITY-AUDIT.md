@@ -18,7 +18,7 @@ The vault is suitable for its stated purpose (beta release for credential manage
 1. ~~**process.env contamination during injection**~~ — **RESOLVED** (commit 630c7a5). Credentials now injected via `params.env` only. No `process.env` mutation.
 2. **Machine-key derivation uses low-entropy inputs** (hostname, uid, timestamp) — encryption alone is insufficient against a local attacker. Binary mode mitigates by adding OS-user file isolation, making encrypted files inaccessible regardless of key strength (Medium severity)
 3. **Fail-open scrubbing** — design choice with acceptable trade-offs but creates a real exposure window on scrubber bugs (Medium severity)
-4. **No path traversal validation in Rust resolver** — setuid binary accepts arbitrary tool names from stdin (Medium severity)
+4. ~~**No path traversal validation in Rust resolver**~~ — **RESOLVED** (commit 290cf09). Tool name validation rejects `/`, `\`, `..`, and leading `.`.
 5. **Mocked concurrent test coverage** — concurrent resolution tests don't exercise real crypto/IO paths (Low severity)
 
 No critical vulnerabilities were found. All previously identified bugs (12 from the prior audit) remain fixed. The test suite is comprehensive at 607 tests across 30 files with dedicated adversarial, false-positive, sub-agent isolation, resolver versioning, and Perl scrubber coverage.
@@ -205,26 +205,14 @@ Known gaps (all documented in adversarial tests): base64-encoded, URL-encoded, h
 
 ---
 
-### F-2: No Path Traversal Validation in Rust Resolver (Medium)
+### F-2: No Path Traversal Validation in Rust Resolver (Medium) — RESOLVED
 
-**Severity: Medium**
-**Location:** `resolver/src/main.rs`, `find_vault_paths()` function, line using `format!("{}.enc", tool_name)`
+**Severity: Medium → RESOLVED (commit 290cf09)**
+**Location:** `resolver/src/main.rs`, tool name validation before path construction
 
-The Rust resolver binary accepts a tool name from stdin JSON and constructs a file path:
-```rust
-let enc_path = dir.join(format!("{}.enc", tool_name));
-```
+**Original issue:** The Rust resolver accepted arbitrary tool names and constructed file paths without validation, allowing path traversal via `../../etc/shadow`.
 
-The tool name is not validated for path traversal characters (`../`, `/`, etc.). While the TypeScript CLI validates tool names via `validateToolName()` in `src/cli.ts`, the Rust binary is invoked independently and runs with setuid permissions.
-
-**Attack scenario:** If an attacker can invoke the setuid resolver binary directly (bypassing the TypeScript layer), they could request:
-```json
-{"tool": "../../etc/shadow", "context": "exec", "command": "test"}
-```
-This would attempt to read `/var/lib/openclaw-vault/../../etc/shadow.enc` = `/etc/shadow.enc` — which likely doesn't exist, and if it did, decryption would fail. However, the existence check itself leaks information (file existence oracle). On systems where `.enc` files exist outside the vault, this could be exploited.
-
-**Recommendation:**
-- Add tool name validation in `main.rs` before path construction: reject names containing `/`, `\`, `..`, or starting with `.`
+**Resolution:** Tool name validation added in `main.rs` before any path construction. Rejects names containing `/`, `\`, `..`, or starting with `.`. This applies to all actions (resolve, sync, remove, sync-meta).
 - This is defense-in-depth — the setuid binary should not trust its input
 
 ---
@@ -305,6 +293,18 @@ Only Telegram bot tokens and Slack bot tokens have global scrub patterns. Other 
 - Bearer tokens in HTTP headers
 
 **Recommendation:** Consider adding global patterns for AWS, GCP, and common JWT bearer patterns. These would provide defense-in-depth even for credentials not registered in the vault.
+
+---
+
+### F-10: System Vault Sync/Remove via Setuid Resolver (Resolved)
+
+**Severity: Medium → RESOLVED (commits 290cf09, bca95e5)**
+
+**Original issue:** `syncToSystemVault()` and `removeFromSystemVault()` ran as the current user but the system vault (`/var/lib/openclaw-vault/`) is owned by `openclaw-vault` (mode 700). Sync fell back to warnings, remove silently failed, leaving stale `.enc` files.
+
+**Resolution:** The setuid resolver binary now supports `sync`, `remove`, and `sync-meta` actions. The TS code routes these operations through the resolver binary (which runs as `openclaw-vault`), with fallback to direct file operations if the binary is unavailable.
+
+**Additional fix (bca95e5):** Files created by the resolver are now explicitly set to mode 0600 before rename, preventing world-readable encrypted credentials.
 
 ---
 
@@ -393,7 +393,7 @@ If a credential resolves to an empty or very short string, `s/\Q\E//g` matches t
 | # | Gap | Severity | Recommendation |
 |---|-----|----------|---------------|
 | G-1 | ~~process.env contamination during injection~~ | ~~Medium~~ | **RESOLVED** — params.env only, no process.env mutation |
-| G-2 | Rust resolver lacks tool name validation | Medium | Add path traversal validation before file path construction |
+| G-2 | ~~Rust resolver lacks tool name validation~~ | ~~Medium~~ | **RESOLVED** — path traversal validation added (commit 290cf09) |
 | G-3 | No test for process.env cleanup lifecycle | Medium | Add test verifying env vars are cleaned after tool call completes |
 | G-4 | No integration test for plugin priority isolation | Low | Add mock-plugin test verifying injection/scrubbing priority ordering |
 | G-5 | Concurrent tests are fully mocked | Low | Add at least one real concurrent crypto test |
@@ -496,7 +496,7 @@ If a credential resolves to an empty or very short string, `s/\Q\E//g` matches t
 The vault provides strong security for its intended threat model. The cryptographic primitives are correctly implemented, the scrubbing pipeline is comprehensive with redundant layers, and the test suite is thorough with dedicated adversarial coverage.
 
 The residual risks are:
-- **Medium:** Rust resolver path validation gap is an actionable finding that should be addressed before v1.0 stable
+- ~~**Medium:** Rust resolver path validation gap~~ → RESOLVED (commit 290cf09)
 - **Medium (mitigated):** LLM exfiltration of tool output — Perl scrubber catches primary vectors; file redirect and group breakout are known bypass paths requiring deliberate multi-step attacks
 - **Low:** Mocked concurrent tests, silent scrubbing errors, and missing vault_status tests are quality gaps, not security vulnerabilities
 - **Informational:** The documented scrubbing blind spots (base64, URL-encoding, split credentials) are inherent limitations of pattern-based scrubbing and are clearly acknowledged

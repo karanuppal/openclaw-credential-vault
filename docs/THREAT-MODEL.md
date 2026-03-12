@@ -149,7 +149,7 @@ Agent calls write(path="notes.md", content="GitHub token is ghp_...")
 Agent calls exec("cat ~/.openclaw/vault/github.enc")
 ```
 **Mitigation (inline mode):** Agent gets binary ciphertext — unusable without key derivation material.  
-**Mitigation (binary mode):** `Permission denied` — files owned by `openclaw-vault` user.
+**Mitigation (binary mode):** `Permission denied` — files in `/var/lib/openclaw-vault/` owned by `openclaw-vault` user (mode 700 directory, 600 files). Sync and remove operations are routed through the setuid resolver binary, which enforces 0600 permissions on all created files. Tool name validation in the resolver rejects path traversal characters (`/`, `\`, `..`).
 
 ### Path 4: Environment Dump
 

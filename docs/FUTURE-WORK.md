@@ -41,17 +41,9 @@ This is especially dangerous for the credential vault because **the plugin IS th
 
 ---
 
-### 0.5. System Vault Cleanup on `vault remove` (BUG — HIGH PRIORITY)
+### ~~0.5. System Vault Cleanup on `vault remove`~~ — RESOLVED (commit 290cf09)
 
-**Problem:** `vault remove` deletes the `.enc` file from the user vault (`~/.openclaw/vault/`) but fails to delete it from the system vault (`/var/lib/openclaw-vault/`). The system vault files are owned by `openclaw-vault:openclaw-vault` (mode 600), and `removeFromSystemVault()` runs as the current user — so `fs.unlinkSync()` silently fails with EACCES.
-
-**Impact:** Every `vault remove` leaves a stale encrypted credential in the system vault. Users must manually `sudo rm` to clean up. This is not a one-time migration issue — it happens on every remove.
-
-**Fix:** Route the deletion through the setuid resolver binary (which runs as `openclaw-vault`). Options:
-- Add a `--remove <toolname>` mode to the existing resolver binary
-- Or add a small setuid helper script in `vault-setup.sh`
-
-The same pattern used by `syncToSystemVault()` should be extended to removal.
+Fixed by routing sync and remove operations through the setuid resolver binary. The resolver now supports `sync`, `remove`, and `sync-meta` actions. Files are created with mode 0600. See commit `bca95e5` for the permissions fix.
 
 ---
 

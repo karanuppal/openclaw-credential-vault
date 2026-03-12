@@ -1,6 +1,6 @@
 # Testing
 
-> 30 test files, 607 tests. Here's what they cover and how to run them.
+> 30 test files, 610 tests. Here's what they cover and how to run them.
 
 ---
 
