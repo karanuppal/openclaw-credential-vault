@@ -345,6 +345,8 @@ export function buildToolConfigFromGuess(
     apiUrl?: string;
     cliTool?: string;
     serviceName?: string;
+    envVarName?: string;
+    commandMatch?: string;
   }
 ): { inject: InjectionRule[]; scrub: ScrubConfig } {
   let inject = [...guess.suggestedInject];
@@ -398,6 +400,23 @@ export function buildToolConfigFromGuess(
         commandMatch: `${overrides.cliTool}*|curl*${toolName}*`,
         env: { [envVarName]: `$vault:${toolName}` },
       });
+    }
+  }
+
+  if (overrides?.envVarName) {
+    const existingExec = inject.findIndex((r) => r.tool === "exec");
+    if (existingExec >= 0 && inject[existingExec].env) {
+      const oldKey = Object.keys(inject[existingExec].env!)[0];
+      const value = inject[existingExec].env![oldKey];
+      delete inject[existingExec].env![oldKey];
+      inject[existingExec].env![overrides.envVarName] = value;
+    }
+  }
+
+  if (overrides?.commandMatch) {
+    const existingExec = inject.findIndex((r) => r.tool === "exec");
+    if (existingExec >= 0) {
+      inject[existingExec].commandMatch = overrides.commandMatch;
     }
   }
 

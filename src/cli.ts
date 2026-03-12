@@ -23,6 +23,8 @@ import {
   removeCredentialFile,
   credentialFileExists,
   getMachinePassphrase,
+  syncToSystemVault,
+  removeFromSystemVault,
 } from "./crypto.js";
 import {
   getKnownTool,
@@ -243,6 +245,9 @@ async function handleBrowserCookieAdd(tool: string, domain?: string): Promise<vo
 
   // Encrypt and store
   await writeCredentialFile(vaultDir, tool, credentialJson, passphrase);
+  if (config.resolverMode === "binary") {
+    syncToSystemVault(vaultDir, tool);
+  }
   console.log(`✓ Stored ${cookies.length} cookies for ${domain} (AES-256-GCM encrypted)`);
   if (earliestExpiry) {
     console.log(`✓ Expires: ${earliestExpiry} (earliest cookie expiry)`);
@@ -297,6 +302,9 @@ async function handleBrowserPasswordAdd(tool: string, key?: string, domain?: str
 
   // Encrypt and store
   await writeCredentialFile(vaultDir, tool, key, passphrase);
+  if (config.resolverMode === "binary") {
+    syncToSystemVault(vaultDir, tool);
+  }
   console.log(`✓ Credential stored: ${tool} (AES-256-GCM encrypted)`);
 
   // Configure injection rule
@@ -323,6 +331,10 @@ async function handleBrowserPasswordAdd(tool: string, key?: string, domain?: str
   if (reloaded) {
     console.log("✓ Gateway reloaded (SIGUSR2) — no restart needed");
   }
+
+  console.log(`\nℹ Note: Browser passwords are injected at runtime via domain pinning.`);
+  console.log(`  The vault does NOT create config files with plaintext credentials.`);
+  console.log(`  If the tool needs a config file, use environment variables instead.`);
 
   console.log(`\nTool "${tool}" is ready. Password will be injected on ${domain} via browser fill.`);
 }
@@ -448,7 +460,7 @@ export function registerCliCommands(program: CliProgram): void {
       }
 
       // Collect overrides for buildToolConfigFromGuess
-      const overrides: { apiUrl?: string; cliTool?: string; serviceName?: string } = {};
+      const overrides: { apiUrl?: string; cliTool?: string; serviceName?: string; envVarName?: string; commandMatch?: string } = {};
 
       if (confirmLower === "edit" || confirmLower === "e") {
         // Edit mode: prompt for all overridable fields
@@ -458,6 +470,21 @@ export function registerCliCommands(program: CliProgram): void {
         if (urlAnswer) overrides.apiUrl = urlAnswer;
         const cliAnswer = await promptUser("  CLI tool name (if any, press Enter to skip)? ");
         if (cliAnswer) overrides.cliTool = cliAnswer;
+
+        // Always ask for env var name and command match in edit mode
+        const defaultEnvVar = guess.suggestedInject[0]?.env
+          ? Object.keys(guess.suggestedInject[0].env)[0]
+          : `${tool.toUpperCase().replace(/-/g, "_")}_API_KEY`;
+        const envAnswer = await promptUser(`  Environment variable name [${defaultEnvVar}]: `);
+        if (envAnswer.trim()) {
+          if (!overrides.envVarName) overrides.envVarName = envAnswer.trim();
+        }
+
+        const defaultMatch = guess.suggestedInject[0]?.commandMatch ?? `${tool}*`;
+        const matchAnswer = await promptUser(`  Command pattern to match [${defaultMatch}]: `);
+        if (matchAnswer.trim()) {
+          if (!overrides.commandMatch) overrides.commandMatch = matchAnswer.trim();
+        }
       } else if (guess.needsPrompt && !options.yes) {
         // Unknown/generic format: prompt for missing context
         if (guess.promptHints.askServiceName) {
@@ -472,10 +499,30 @@ export function registerCliCommands(program: CliProgram): void {
           const cliAnswer = await promptUser("  CLI tool name (if any, press Enter to skip)? ");
           if (cliAnswer) overrides.cliTool = cliAnswer;
         }
+
+        // Ask for env var name when the guesser used a generic name
+        if (guess.confidence === "low" || guess.format === "generic-api-key" || guess.format === "password" || guess.format === "unknown") {
+          const defaultEnvVar = guess.suggestedInject[0]?.env
+            ? Object.keys(guess.suggestedInject[0].env)[0]
+            : `${tool.toUpperCase().replace(/-/g, "_")}_API_KEY`;
+          const envAnswer = await promptUser(`  Environment variable name [${defaultEnvVar}]: `);
+          if (envAnswer.trim()) {
+            overrides.envVarName = envAnswer.trim();
+          }
+
+          const defaultMatch = guess.suggestedInject[0]?.commandMatch ?? `${tool}*`;
+          const matchAnswer = await promptUser(`  Command pattern to match [${defaultMatch}]: `);
+          if (matchAnswer.trim()) {
+            overrides.commandMatch = matchAnswer.trim();
+          }
+        }
       }
 
       // Encrypt and store
       const filePath = await writeCredentialFile(vaultDir, tool, options.key, passphrase);
+      if (config.resolverMode === "binary") {
+        syncToSystemVault(vaultDir, tool);
+      }
       console.log(`\n✓ Credential stored: ${tool} (AES-256-GCM encrypted)`);
 
       // Build tool config from guess (with any overrides)
@@ -511,6 +558,8 @@ export function registerCliCommands(program: CliProgram): void {
             console.log(`    ${rule.tool} URLs matching: ${rule.urlMatch}`);
           }
         }
+        console.log("\nℹ Credentials are injected via environment variables, not command string tokens.");
+        console.log("  Use $ENVVAR_NAME in your commands (e.g., curl -H \"Authorization: Bearer $GITHUB_TOKEN\" ...)");
       }
       if (scrub.patterns.length > 0) {
         console.log(`✓ Scrubbing patterns registered: ${scrub.patterns.join(", ")}`);
@@ -612,6 +661,10 @@ export function registerCliCommands(program: CliProgram): void {
         if (rule.env) console.log(`    env: ${JSON.stringify(rule.env)}`);
         if (rule.headers) console.log(`    headers: ${JSON.stringify(rule.headers)}`);
       }
+      if (toolConfig.inject.some((r) => r.env)) {
+        console.log("\nℹ Credentials are injected via environment variables, not command string tokens.");
+        console.log("  Use $ENVVAR_NAME in your commands (e.g., curl -H \"Authorization: Bearer $GITHUB_TOKEN\" ...)");
+      }
       console.log("\nScrubbing Patterns:");
       for (const pattern of toolConfig.scrub.patterns) {
         console.log(`  - ${pattern}`);
@@ -704,6 +757,10 @@ export function registerCliCommands(program: CliProgram): void {
             // Remove old file and write new one
             removeCredentialFile(vaultDir, name);
             await writeCredentialFile(vaultDir, name, answer.trim(), passphrase);
+            if (config.resolverMode === "binary") {
+              removeFromSystemVault(name);
+              syncToSystemVault(vaultDir, name);
+            }
 
             // Update rotation timestamp
             toolConfig.lastRotated = new Date().toISOString();
@@ -765,6 +822,10 @@ export function registerCliCommands(program: CliProgram): void {
       // Remove old file and write new one
       removeCredentialFile(vaultDir, tool);
       await writeCredentialFile(vaultDir, tool, options.key, passphrase);
+      if (config.resolverMode === "binary") {
+        removeFromSystemVault(tool);
+        syncToSystemVault(vaultDir, tool);
+      }
 
       // Update rotation timestamp
       toolConfig.lastRotated = new Date().toISOString();
@@ -819,6 +880,9 @@ export function registerCliCommands(program: CliProgram): void {
 
       // Remove encrypted file
       removeCredentialFile(vaultDir, tool);
+      if (config.resolverMode === "binary") {
+        removeFromSystemVault(tool);
+      }
 
       let updatedConfig: typeof config;
       if (options.purge) {
@@ -902,6 +966,23 @@ export function registerCliCommands(program: CliProgram): void {
           ? `  ✓ Scrubbing active`
           : `  ℹ No patterns matched test string (patterns may be specific to your key format)`
       );
+
+      // Test binary resolver if in binary mode
+      if (config.resolverMode === "binary") {
+        const { resolveViaRustBinary } = await import("./resolver.js");
+        const resolverResult = await resolveViaRustBinary(tool, "exec", "test-command");
+        if (resolverResult.ok) {
+          console.log(`\n✓ Binary resolver: OK (credential accessible)`);
+        } else {
+          console.log(`\n✗ Binary resolver: FAILED — ${resolverResult.message}`);
+          if (resolverResult.error === "CREDENTIAL_MISSING") {
+            console.log(`  The resolver cannot find ${tool}.enc in the system vault.`);
+            console.log(`  Fix: Run 'sudo bash vault-setup.sh' to sync credentials.`);
+          } else if (resolverResult.error === "PROTOCOL_MISMATCH") {
+            console.log(`  Plugin/resolver version mismatch. Run 'sudo bash vault-setup.sh' to update.`);
+          }
+        }
+      }
 
       console.log(`\n✓ Tool "${tool}" is configured correctly.`);
     });

@@ -168,3 +168,62 @@ export function credentialFileExists(
 ): boolean {
   return fs.existsSync(path.join(vaultDir, `${toolName}.enc`));
 }
+
+const SYSTEM_VAULT_DIR = "/var/lib/openclaw-vault";
+
+/**
+ * Sync a credential file to the system vault directory (/var/lib/openclaw-vault/).
+ * Only needed in binary resolver mode — the setuid binary reads from the system dir.
+ * Best-effort: logs warning on failure, never throws.
+ */
+export function syncToSystemVault(vaultDir: string, toolName: string): void {
+  try {
+    const srcPath = path.join(vaultDir, `${toolName}.enc`);
+    const destPath = path.join(SYSTEM_VAULT_DIR, `${toolName}.enc`);
+    if (!fs.existsSync(srcPath)) return;
+    if (!fs.existsSync(SYSTEM_VAULT_DIR)) {
+      console.error(`[vault] ⚠ System vault dir ${SYSTEM_VAULT_DIR} not found. Run 'sudo bash vault-setup.sh' to fix.`);
+      return;
+    }
+    const tmpPath = destPath + ".tmp";
+    fs.copyFileSync(srcPath, tmpPath);
+    fs.renameSync(tmpPath, destPath);
+    // Also sync .vault-meta.json if needed
+    const metaSrc = path.join(vaultDir, ".vault-meta.json");
+    const metaDest = path.join(SYSTEM_VAULT_DIR, ".vault-meta.json");
+    if (fs.existsSync(metaSrc)) {
+      const srcStat = fs.statSync(metaSrc);
+      const destExists = fs.existsSync(metaDest);
+      if (!destExists || fs.statSync(metaDest).mtimeMs < srcStat.mtimeMs) {
+        const metaTmp = metaDest + ".tmp";
+        fs.copyFileSync(metaSrc, metaTmp);
+        fs.renameSync(metaTmp, metaDest);
+      }
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("EACCES") || msg.includes("permission")) {
+      console.error(`[vault] ⚠ SYNC FAILED: Cannot write to ${SYSTEM_VAULT_DIR} (permission denied).`);
+      console.error(`[vault]   This credential will NOT work with the binary resolver until fixed.`);
+      console.error(`[vault]   Fix: Run 'sudo bash vault-setup.sh' to re-sync all credentials.`);
+    } else {
+      console.error(`[vault] ⚠ Could not sync to system vault: ${msg}`);
+    }
+  }
+}
+
+/**
+ * Remove a credential file from the system vault directory.
+ * Best-effort: logs warning on failure, never throws.
+ */
+export function removeFromSystemVault(toolName: string): void {
+  try {
+    const destPath = path.join(SYSTEM_VAULT_DIR, `${toolName}.enc`);
+    if (fs.existsSync(destPath)) {
+      fs.unlinkSync(destPath);
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[vault] ⚠ Could not remove from system vault: ${msg}`);
+  }
+}
