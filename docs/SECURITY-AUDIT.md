@@ -180,24 +180,14 @@ Known gaps (all documented in adversarial tests): base64-encoded, URL-encoded, h
 
 ## New Findings
 
-### F-1: process.env Contamination During Injection (Medium)
+### F-1: process.env Contamination During Injection (Medium) — RESOLVED
 
-**Severity: Medium**
-**Location:** `src/index.ts`, line 393
-**Code:** `process.env[envKey] = resolved;`
+**Severity: Medium → RESOLVED (commit 630c7a5)**
+**Location:** `src/index.ts`, env injection block
 
-During credential injection for exec tool calls, the vault sets credentials directly on `process.env`. While cleanup happens in `handleAfterToolCall()`, there is a window between injection and cleanup where:
+**Original issue:** During credential injection, the vault set credentials on `process.env` and prepended `export KEY=[VAULT:env-redacted] && command` to the command string. This contaminated the gateway process environment and exposed credentials in the command string.
 
-1. The credential exists in the gateway's process environment
-2. Any other code running in the same event loop iteration (unlikely due to Node.js single-threaded model, but possible with microtask interleaving) could read it
-3. If the tool call throws an exception before `handleAfterToolCall()` runs, cleanup may not occur (mitigated by the try-catch in `handleAfterToolCall` — but if the *tool itself* crashes the process, env vars persist)
-4. The threat model states "Vault credentials were never there" regarding `process.env` — **this is inaccurate**
-
-**The command prepend is also notable:** Line 399 constructs:
-```typescript
-params.command = `${envExports.join(" && ")} && ${params.command}`;
-```
-This embeds the raw credential in the command string as `export KEY=[VAULT:env-redacted] && original_command`. The credential now exists in `params.command` which is passed to the exec tool. While the output is scrubbed, the credential momentarily exists in the tool call parameters.
+**Resolution:** Credentials are now injected ONLY via `params.env` (passed directly to the subprocess spawn). No `process.env` mutation, no command string prepend. A Perl stdout scrubber pipes subprocess output through credential value replacement before exec captures it. Credentials are base64-encoded in the perl command, never appearing in plaintext in the command string.
 
 **Recommendation:**
 - Remove `process.env[envKey] = resolved` (line 393) — it's redundant with the `params.env` injection on line 391 and the command prepend on line 399
@@ -343,24 +333,23 @@ This escaping handles single quotes correctly for bash. However:
 **Attack path:**
 1. Agent calls `exec` with a command matching an injection rule (e.g., `gws auth status`)
 2. Vault injects credentials via env vars / command prepend
-3. Tool executes and returns output containing the credential value
-4. **LLM receives the raw output with the actual credential** — no scrubbing has occurred
-5. LLM may echo the credential into a chat message (as demonstrated 2026-03-12)
-6. `message_sending` hook scrubs the outbound message — but the LLM already "knows" the credential
+3. Tool executes and returns output — **Perl stdout scrubber replaces credential values before exec captures stdout**
+4. LLM receives the scrubbed output with `[VAULT:name]` replacement markers
+5. `tool_result_persist` scrubs the transcript for persistence
+6. `message_sending` scrubs outbound messages as a final defense layer
 
-**Impact:** The credential is in the LLM's context window. Even with `message_sending` scrubbing the outbound message, the LLM can be prompt-injected to encode or exfiltrate the credential value. The scrubbing defense is weaker than documented — it's transcript-and-outbound scrubbing, NOT inference-time scrubbing.
+**Status: MITIGATED (commit 630c7a5)**
 
-**Root cause:** OpenClaw has no `transform_tool_result` hook between tool execution and LLM inference. The hooks available are:
-- `before_tool_call` — can modify params, block the call (pre-execution)
-- `after_tool_call` — observe-only, cannot modify result
-- `tool_result_persist` — modifies what's written to transcript (post-inference)
+The Perl stdout scrubber (implemented via `before_tool_call` hook) wraps exec commands in `{ command ; } 2>&1 | perl -pe 's/\Qcredential\E/[VAULT:name]/g'`. Credentials are base64-encoded in the perl command, decoded at runtime via MIME::Base64. This catches the primary exfiltration vectors: `printenv`, `env.VAR` in jq, `echo $VAR`.
 
-**Demonstrated vulnerability (2026-03-12):** The LLM (MillieClaw) ran `openclaw vault show gws-client-id`, received the scrub pattern (which IS the real credential value), and posted it verbatim into a Telegram group chat. The `message_sending` hook would have scrubbed the pattern-matched credential value, but the `vault show` output contained the regex pattern — which is the credential itself, not matching the regex. The LLM also had the raw credential from a prior `env | grep` test.
+**Known limitations:**
+- File redirect bypass: `echo $SECRET > /tmp/file` writes to disk before the pipe sees it
+- Shell injection: sophisticated command construction could bypass the pipe (e.g., subshells, heredocs)
+- Both require deliberate multi-step attacks by a malicious LLM
 
-**Recommendation:**
-1. **Immediate:** Document this limitation honestly in THREAT-MODEL.md and README
-2. **Short-term:** Request an OpenClaw `transform_tool_result` hook (or `after_tool_call` with modification capability) — this would allow scrubbing before the LLM sees tool output
-3. **Medium-term:** Consider scrubbing inside the `before_tool_call` hook by wrapping the exec tool's command to pipe output through a scrubber process, though this adds complexity and may break binary output
+**Original vulnerability (2026-03-12):** The LLM saw the raw GWS client ID in tool output and posted a partial form to Telegram that didn't match the full regex pattern. This is now mitigated by the Perl scrubber catching the value at the subprocess output level.
+
+**Remaining recommendation:** Request OpenClaw `transform_tool_result` hook for defense-in-depth — this would provide a second scrubbing layer between tool execution and LLM inference, independent of the Perl pipe approach.
 
 ---
 
@@ -370,7 +359,7 @@ This escaping handles single quotes correctly for bash. However:
 
 | # | Gap | Severity | Recommendation |
 |---|-----|----------|---------------|
-| G-1 | process.env contamination during injection | Medium | Remove redundant `process.env` assignment (line 393) or document the race window |
+| G-1 | ~~process.env contamination during injection~~ | ~~Medium~~ | **RESOLVED** — params.env only, no process.env mutation |
 | G-2 | Rust resolver lacks tool name validation | Medium | Add path traversal validation before file path construction |
 | G-3 | No test for process.env cleanup lifecycle | Medium | Add test verifying env vars are cleaned after tool call completes |
 | G-4 | No integration test for plugin priority isolation | Low | Add mock-plugin test verifying injection/scrubbing priority ordering |

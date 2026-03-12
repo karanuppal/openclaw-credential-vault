@@ -68,14 +68,14 @@ The vault's job is to minimize credential exposure in the agent's context window
 
 #### 6. Environment Variable Exposure
 
-**Threat:** Credentials injected as env vars for one subprocess persist in the gateway's process environment and appear when the agent runs `env` or `printenv`.
+**Threat:** Credentials injected as env vars could persist in the gateway's process environment and appear when the agent runs `env` or `printenv`.
 
 **Defense layers:**
-- Credentials are injected into the subprocess via `params.env` and a command prepend (`export KEY=[VAULT:env-redacted] && original_command`).
-- Credentials are also briefly set on the gateway's `process.env` during injection. The `after_tool_call` hook cleans up injected env vars via `delete process.env[envKey]` after the tool call completes.
+- Credentials are injected ONLY via `params.env` (passed directly to the subprocess spawn). They are NOT set on the gateway's `process.env` and NOT prepended to the command string.
+- A Perl stdout scrubber pipes subprocess output through credential value replacement before the exec tool captures it. Credentials are base64-encoded in the perl command (never plaintext in the command string).
 - The env-var name scrubbing layer catches `TOKEN=[VAULT:env-redacted] `SECRET=[VAULT:env-redacted] `KEY=[VAULT:env-redacted] patterns in any output.
 
-**Known gap:** There is a brief window between injection and cleanup where credentials exist in `process.env`. In normal operation this window is the duration of a single tool call. If the gateway process crashes during a tool call, cleanup may not run. This is a residual risk documented in the security audit (F-1).
+**Status:** RESOLVED. The gateway process environment is never contaminated with credentials (F-1 fixed). Subprocess stdout exfiltration is mitigated by the Perl scrubber. Known limitation: file redirect bypass (`echo $SECRET > /tmp/file`) is not caught by the pipe scrubber — this requires OS-level sandboxing.
 
 #### 7. Output Pattern Leakage
 
@@ -156,7 +156,11 @@ Agent calls exec("cat ~/.openclaw/vault/github.enc")
 ```
 Agent calls exec("env") or exec("printenv")
 ```
-**Mitigation:** Credentials are injected per-subprocess via `params.env` and cleaned from `process.env` after each tool call. The env-variable-name scrubbing layer catches `TOKEN=[VAULT:env-redacted] `SECRET=[VAULT:env-redacted] `KEY=[VAULT:env-redacted] patterns in output. A brief window exists where credentials are in `process.env` during tool execution (see Threat 6).
+**Mitigation (layered):**
+- **Layer 0 (Perl stdout scrubber):** Subprocess output is piped through `perl -pe` which replaces credential values before the exec tool captures stdout. This is the primary defense — the LLM never sees the raw credential in tool output.
+- **Layer 1 (params.env isolation):** Credentials are injected only via `params.env` (not `process.env`). Commands like `env` or `printenv` without vault injection rules don't trigger the credential injection at all.
+- **Layer 2 (transcript scrubbing):** `tool_result_persist` scrubs credentials from the session transcript on disk.
+- **Layer 3 (outbound scrubbing):** `message_sending` scrubs credentials from messages before delivery to Telegram/other channels.
 
 ### Path 5: Outbound Messages
 
@@ -208,13 +212,13 @@ This path only applies to binary mode users. In inline mode, the resolver is not
 | Threat | Layer 1 | Layer 2 | Layer 3 |
 |--------|---------|---------|---------|
 | Agent reads credential | AES-256-GCM encryption | OS-user separation (binary mode) | — |
-| Credential in tool output | Regex pattern scrubbing | Literal match scrubbing | Env-var name scrubbing |
+| Credential in tool output | Perl stdout scrubber (pipe) | Regex pattern scrubbing | Literal match scrubbing |
 | Credential in transcript | `tool_result_persist` scrub | `before_message_write` scrub | — |
 | Credential in outbound msg | `message_sending` scrub | — | — |
 | Credential in file write | `before_tool_call` write/edit interception | — | — |
 | Browser password redirect | Domain pinning validation | — | — |
 | Cookie injection to wrong site | Domain pinning on navigate URL | Cookie domain filtering | — |
-| Env var exposure | Per-subprocess injection (`params.env`) | Env-var name scrubbing | Post-call `process.env` cleanup |
+| Env var exposure | Per-subprocess injection (`params.env` only) | Perl stdout scrubber | Env-var name scrubbing |
 | Compromised resolver binary | seccomp filter (restricts syscalls) | Capability dropping | — |
 | Resolver version mismatch | Protocol version check | Block + warning in tool output | Audit log event |
 

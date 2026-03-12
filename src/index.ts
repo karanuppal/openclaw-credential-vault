@@ -605,13 +605,8 @@ function handleAfterToolCall(
   }
   state.currentInjections = [];
 
-  // Clean up injected env vars from process.env
-  if (state.injectedEnvVars && state.injectedEnvVars.length > 0) {
-    for (const envKey of state.injectedEnvVars) {
-      delete process.env[envKey];
-    }
-    state.injectedEnvVars = [];
-  }
+  // Note: process.env cleanup removed — we no longer set process.env during injection
+  // (params.env only). The injectedEnvVars array is no longer populated.
   } catch (err: unknown) {
     logVaultError("handleAfterToolCall", err);
   }
