@@ -281,6 +281,13 @@ fn drop_capabilities() {
     // No-op on non-Linux
 }
 
+/// Set file permissions (Unix mode)
+fn set_file_mode(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    let perms = std::fs::Permissions::from_mode(mode);
+    let _ = fs::set_permissions(path, perms);
+}
+
 /// Simple base64 decode (standard alphabet)
 fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
     use std::collections::HashMap;
@@ -400,6 +407,8 @@ fn main() {
         if let Err(e) = fs::write(&tmp_path, &data) {
             write_error(EXIT_PERMISSION_DENIED, "EIO", &format!("Failed to write temp file: {}", e));
         }
+        // Set restrictive permissions (0600) before rename
+        set_file_mode(&tmp_path, 0o600);
         if let Err(e) = fs::rename(&tmp_path, &dest_path) {
             let _ = fs::remove_file(&tmp_path);
             write_error(EXIT_PERMISSION_DENIED, "EIO", &format!("Failed to rename temp file: {}", e));
@@ -447,6 +456,7 @@ fn main() {
         if let Err(e) = fs::write(&tmp_path, &data) {
             write_error(EXIT_PERMISSION_DENIED, "EIO", &format!("Failed to write: {}", e));
         }
+        set_file_mode(&tmp_path, 0o600);
         if let Err(e) = fs::rename(&tmp_path, &dest_path) {
             let _ = fs::remove_file(&tmp_path);
             write_error(EXIT_PERMISSION_DENIED, "EIO", &format!("Failed to rename: {}", e));
