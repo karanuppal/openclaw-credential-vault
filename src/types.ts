@@ -102,6 +102,16 @@ export interface VaultConfig {
   resolverMode?: "inline" | "binary";
   /** Custom path to the Rust resolver binary (optional, auto-detected if not set) */
   resolverPath?: string;
+  /**
+   * What to do when the Rust resolver fails (version mismatch, binary missing, etc.).
+   * - "block" (default): credential not injected, warning shown in tool output
+   * - "warn-and-inline": falls back to inline (TypeScript) decryption with audit warning
+   *
+   * Security note: "warn-and-inline" downgrades the isolation model — the agent process
+   * reads the encrypted file directly, bypassing OS-user separation. Use only if availability
+   * is more important than isolation.
+   */
+  onResolverFailure?: "block" | "warn-and-inline";
   tools: Record<string, ToolConfig>;
 }
 
@@ -151,8 +161,29 @@ export interface AuditCompactionEvent {
   scrubbingActive: boolean;
 }
 
+/** Audit log event — resolver failure */
+export interface AuditResolverFailure {
+  type: "resolver_failure";
+  timestamp: string;
+  tool: string;
+  error: string;
+  message: string;
+  pluginVersion: number;
+  resolverVersion: number | null;
+  policy: string;
+}
+
+/** Audit log event — security downgrade (inline fallback in binary mode) */
+export interface AuditSecurityDowngrade {
+  type: "security_downgrade";
+  timestamp: string;
+  tool: string;
+  reason: string;
+  originalError: string;
+}
+
 /** Union of all audit event types */
-export type AuditEvent = AuditCredentialAccess | AuditScrubEvent | AuditCompactionEvent;
+export type AuditEvent = AuditCredentialAccess | AuditScrubEvent | AuditCompactionEvent | AuditResolverFailure | AuditSecurityDowngrade;
 
 /** Agent tool interface (subset we use for vault_status) */
 export interface AgentToolDef {

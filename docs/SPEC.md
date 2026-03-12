@@ -237,9 +237,31 @@ The mode is set in `tools.yaml`:
 ```yaml
 resolverMode: binary  # or "inline" (default)
 resolverPath: /usr/local/bin/openclaw-vault-resolver  # optional custom path
+onResolverFailure: block  # or "warn-and-inline"
 ```
 
 Running `sudo bash vault-setup.sh` switches the mode to `binary` and migrates credential files.
+
+### Resolver Failure Policy (`onResolverFailure`)
+
+Controls what happens when the Rust resolver fails in binary mode (version mismatch, binary missing, decryption error):
+
+| Value | Behavior | Security Impact |
+|-------|----------|-----------------|
+| `block` (default) | Credential NOT injected. Warning appended to tool output explaining why and how to fix. Command runs without authentication. | No downgrade — maintains OS-user isolation. |
+| `warn-and-inline` | Falls back to inline (TypeScript) decryption. Warning appended to tool output. Audit log records a `security_downgrade` event. | **Downgrades isolation model** — the agent process reads encrypted files directly, bypassing OS-user separation. Use only if availability is more important than isolation. |
+
+**What the user sees on failure:**
+
+The warning is injected into the tool result, so both the agent and the human operator see it. It includes:
+- What went wrong (version mismatch, binary not found, etc.)
+- The direction of mismatch (plugin newer vs resolver newer)
+- Exact fix command (`sudo bash vault-setup.sh` or `npm update openclaw-credential-vault`)
+- Whether a security downgrade occurred
+
+**Audit trail:** Every resolver failure writes a `resolver_failure` event to the audit log. Every inline fallback writes an additional `security_downgrade` event. Check with `openclaw vault logs`.
+
+**Console warning:** On the first protocol mismatch per session, a prominent box warning is printed to stderr (visible in gateway logs).
 
 ---
 

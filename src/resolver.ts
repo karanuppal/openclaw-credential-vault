@@ -15,6 +15,21 @@ import * as path from "node:path";
  */
 export const PROTOCOL_VERSION = 1;
 
+/** Resolver error codes for structured failure handling */
+export type ResolverErrorCode =
+  | "NOT_FOUND"        // Binary not found on disk
+  | "CREDENTIAL_MISSING" // Tool has no credential in vault
+  | "DECRYPT_FAILED"   // Argon2id/AES decryption error
+  | "PERMISSION_DENIED" // File permissions block access
+  | "SECCOMP_VIOLATION" // Seccomp filter triggered
+  | "PROTOCOL_MISMATCH" // Plugin/resolver version mismatch
+  | "UNKNOWN";          // Unexpected failure
+
+/** Structured result from resolver — success or typed error */
+export type ResolverResult =
+  | { ok: true; credential: string; expires: string | null; resolverVersion: number | null }
+  | { ok: false; error: ResolverErrorCode; message: string; pluginVersion: number; resolverVersion: number | null };
+
 /** Default paths to check for the resolver binary (in priority order) */
 const RESOLVER_PATHS = [
   "/usr/local/bin/openclaw-vault-resolver",
@@ -42,26 +57,33 @@ export function findResolverBinary(customPath?: string): string | null {
 }
 
 /**
+ * Parse the resolver version from an error message like:
+ * "Protocol version mismatch: plugin sent v2, resolver expects v1."
+ */
+function parseResolverVersionFromError(msg: string): number | null {
+  const match = msg.match(/resolver expects v(\d+)/);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+/**
  * Spawn the Rust resolver binary and get a credential.
- *
- * @param toolName - The tool to resolve credentials for (e.g., "gumroad")
- * @param context - The calling context (e.g., "exec", "web_fetch")
- * @param command - The command or URL being executed
- * @param resolverPath - Optional custom path to the resolver binary
- * @returns The credential and expiry, or null if resolution failed
+ * Returns a structured result with typed errors for the caller to handle.
  */
 export async function resolveViaRustBinary(
   toolName: string,
   context: string,
   command: string,
   resolverPath?: string
-): Promise<{ credential: string; expires: string | null } | null> {
+): Promise<ResolverResult> {
   const binaryPath = findResolverBinary(resolverPath);
   if (!binaryPath) {
-    console.error(
-      "[vault] Resolver binary not found. Install with: sudo openclaw vault setup-resolver"
-    );
-    return null;
+    return {
+      ok: false,
+      error: "NOT_FOUND",
+      message: "Resolver binary not found. Install with: sudo bash vault-setup.sh",
+      pluginVersion: PROTOCOL_VERSION,
+      resolverVersion: null,
+    };
   }
 
   const request = JSON.stringify({
@@ -88,49 +110,85 @@ export async function resolveViaRustBinary(
         if (error) {
           const exitCode = (error as any).code ?? -1;
           let errorMsg = stderr.trim();
+          let errorCode = "EUNKNOWN";
 
           // Try to parse structured error from stderr
           try {
             const errJson = JSON.parse(errorMsg);
             errorMsg = errJson.message ?? errorMsg;
+            errorCode = errJson.error ?? errorCode;
           } catch {
             // stderr wasn't JSON, use as-is
           }
 
+          // Detect protocol mismatch from error code
+          if (errorCode === "EPROTO" || errorMsg.includes("Protocol version mismatch")) {
+            const resolverVersion = parseResolverVersionFromError(errorMsg);
+            resolve({
+              ok: false,
+              error: "PROTOCOL_MISMATCH",
+              message: errorMsg,
+              pluginVersion: PROTOCOL_VERSION,
+              resolverVersion,
+            });
+            return;
+          }
+
+          // Map exit codes to error types
+          let mappedError: ResolverErrorCode;
           switch (exitCode) {
             case 1:
-              console.error(`[vault] Credential not found for tool: ${toolName}`);
+              mappedError = "CREDENTIAL_MISSING";
               break;
             case 2:
-              console.error(`[vault] Decryption failed for tool: ${toolName} — ${errorMsg}`);
+              mappedError = "DECRYPT_FAILED";
               break;
             case 3:
-              console.error(`[vault] Permission denied for tool: ${toolName} — ${errorMsg}`);
+              mappedError = "PERMISSION_DENIED";
               break;
             case 4:
-              console.error(`[vault] Seccomp violation in resolver for tool: ${toolName}`);
+              mappedError = "SECCOMP_VIOLATION";
               break;
             default:
-              console.error(`[vault] Resolver failed (exit ${exitCode}) for tool: ${toolName} — ${errorMsg}`);
+              mappedError = "UNKNOWN";
           }
-          resolve(null);
+
+          resolve({
+            ok: false,
+            error: mappedError,
+            message: errorMsg || `Resolver exited with code ${exitCode}`,
+            pluginVersion: PROTOCOL_VERSION,
+            resolverVersion: null,
+          });
           return;
         }
 
         try {
           const result = JSON.parse(stdout.trim());
           if (typeof result.credential !== "string") {
-            console.error("[vault] Resolver returned invalid response: missing credential field");
-            resolve(null);
+            resolve({
+              ok: false,
+              error: "UNKNOWN",
+              message: "Resolver returned invalid response: missing credential field",
+              pluginVersion: PROTOCOL_VERSION,
+              resolverVersion: result.protocol_version ?? null,
+            });
             return;
           }
           resolve({
+            ok: true,
             credential: result.credential,
             expires: result.expires ?? null,
+            resolverVersion: result.protocol_version ?? null,
           });
         } catch (parseErr) {
-          console.error(`[vault] Failed to parse resolver output: ${(parseErr as Error).message}`);
-          resolve(null);
+          resolve({
+            ok: false,
+            error: "UNKNOWN",
+            message: `Failed to parse resolver output: ${(parseErr as Error).message}`,
+            pluginVersion: PROTOCOL_VERSION,
+            resolverVersion: null,
+          });
         }
       }
     );

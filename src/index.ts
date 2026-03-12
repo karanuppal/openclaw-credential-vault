@@ -11,7 +11,8 @@
 
 import { readConfig, getVaultDir, readMeta, getOverdueCredentials } from "./config.js";
 import { readCredentialFile, getMachinePassphrase } from "./crypto.js";
-import { resolveViaRustBinary } from "./resolver.js";
+import { resolveViaRustBinary, PROTOCOL_VERSION } from "./resolver.js";
+import type { ResolverResult } from "./resolver.js";
 import { findMatchingRules } from "./registry.js";
 import {
   compileScrubRules,
@@ -23,7 +24,7 @@ import {
   CompiledScrubRule,
 } from "./scrubber.js";
 import { registerCliCommands } from "./cli.js";
-import { logCredentialAccess, logScrubEvent, logCompactionEvent } from "./audit.js";
+import { logCredentialAccess, logScrubEvent, logCompactionEvent, writeAuditEvent } from "./audit.js";
 import { createVaultStatusTool } from "./vault-status.js";
 import { PluginApi, VaultConfig, ToolConfig, PlaywrightCookie } from "./types.js";
 import {
@@ -64,6 +65,8 @@ interface VaultState {
   resolverMode: "inline" | "binary";
   /** Custom path to Rust resolver binary */
   resolverPath?: string;
+  /** Failure policy for binary resolver: "block" (default) or "warn-and-inline" */
+  onResolverFailure: "block" | "warn-and-inline";
   /** Cache of decrypted credentials to avoid repeated Argon2id derivation */
   credentialCache: Map<string, { value: string; cachedAt: number }>;
   /** Track which credentials were injected in the current tool call (for audit) */
@@ -111,6 +114,7 @@ function loadState(): VaultState | null {
     passphrase,
     resolverMode: config.resolverMode ?? "inline",
     resolverPath: config.resolverPath,
+    onResolverFailure: config.onResolverFailure ?? "block",
     credentialCache: new Map(),
     currentInjections: [],
     injectedEnvVars: [],
@@ -123,25 +127,76 @@ function loadState(): VaultState | null {
  * In "binary" mode (Phase 2): delegates to the Rust resolver binary.
  *
  * On successful decrypt, adds the credential to the literal match set.
+ * On binary resolver failure, follows onResolverFailure policy.
  */
 /** Credential cache TTL: 15 minutes. After this, credentials are re-decrypted. */
 const CACHE_TTL_MS = 15 * 60 * 1000;
+
+/** Track whether we've already shown the version mismatch warning this session */
+let resolverMismatchWarned = false;
+
+/**
+ * Build a user-facing warning message for resolver failures.
+ * Includes actionable fix instructions based on the error type.
+ */
+function buildResolverWarning(result: ResolverResult & { ok: false }, toolName: string): string {
+  const lines: string[] = [];
+
+  if (result.error === "PROTOCOL_MISMATCH") {
+    lines.push(`⚠️ Vault resolver protocol mismatch for "${toolName}"`);
+    lines.push(`   Plugin version: v${result.pluginVersion}, Resolver version: v${result.resolverVersion ?? "unknown"}`);
+
+    if (result.resolverVersion !== null && result.pluginVersion > result.resolverVersion) {
+      // Plugin is newer — user updated npm but not the binary
+      lines.push(`   Fix: Rebuild the resolver binary to match the plugin:`);
+      lines.push(`         sudo bash vault-setup.sh`);
+    } else if (result.resolverVersion !== null && result.pluginVersion < result.resolverVersion) {
+      // Resolver is newer — user rebuilt binary but not the plugin
+      lines.push(`   Fix: Update the plugin to match the resolver:`);
+      lines.push(`         npm update openclaw-credential-vault`);
+    } else {
+      lines.push(`   Fix: Ensure both plugin and resolver are the same version.`);
+      lines.push(`         Plugin: npm update openclaw-credential-vault`);
+      lines.push(`         Resolver: sudo bash vault-setup.sh`);
+    }
+  } else if (result.error === "NOT_FOUND") {
+    lines.push(`⚠️ Vault resolver binary not found for "${toolName}"`);
+    lines.push(`   Binary mode is configured but the resolver is not installed.`);
+    lines.push(`   Fix: Install the resolver: sudo bash vault-setup.sh`);
+    lines.push(`   Or switch to inline mode: set resolverMode: "inline" in tools.yaml`);
+  } else {
+    lines.push(`⚠️ Vault resolver failed for "${toolName}": ${result.message}`);
+  }
+
+  return lines.join("\n");
+}
+
+/** Result from getCredential — includes warning text if resolver failed with fallback */
+interface CredentialResult {
+  credential: string | null;
+  /** Warning to inject into tool output (only set on resolver failure) */
+  warning: string | null;
+  /** Whether a security downgrade occurred (inline fallback in binary mode) */
+  securityDowngrade: boolean;
+}
 
 async function getCredential(
   toolName: string,
   st: VaultState,
   context?: string,
   command?: string
-): Promise<string | null> {
+): Promise<CredentialResult> {
   const cached = st.credentialCache.get(toolName);
   if (cached && (Date.now() - cached.cachedAt) < CACHE_TTL_MS) {
-    return cached.value;
+    return { credential: cached.value, warning: null, securityDowngrade: false };
   }
   // Evict expired entry
   if (cached) st.credentialCache.delete(toolName);
 
   try {
     let cred: string | null;
+    let warning: string | null = null;
+    let securityDowngrade = false;
 
     if (st.resolverMode === "binary") {
       // Phase 2: delegate to Rust resolver binary
@@ -151,9 +206,64 @@ async function getCredential(
         command ?? "",
         st.resolverPath
       );
-      cred = result?.credential ?? null;
+
+      if (result.ok) {
+        cred = result.credential;
+      } else {
+        // Resolver failed — build warning and decide on fallback
+        warning = buildResolverWarning(result, toolName);
+        console.error(`[vault] ${warning}`);
+
+        // Log to audit
+        writeAuditEvent({
+          type: "resolver_failure",
+          timestamp: new Date().toISOString(),
+          tool: toolName,
+          error: result.error,
+          message: result.message,
+          pluginVersion: result.pluginVersion,
+          resolverVersion: result.resolverVersion,
+          policy: st.onResolverFailure,
+        }, st.vaultDir);
+
+        // Log prominent warning on first mismatch
+        if (result.error === "PROTOCOL_MISMATCH" && !resolverMismatchWarned) {
+          resolverMismatchWarned = true;
+          console.error(
+            "\n" +
+            "╔══════════════════════════════════════════════════════════════╗\n" +
+            "║  VAULT: Protocol version mismatch detected!                ║\n" +
+            `║  Plugin v${result.pluginVersion} ≠ Resolver v${String(result.resolverVersion ?? "?").padEnd(40)}║\n` +
+            "║  Credentials will NOT be injected until this is fixed.     ║\n" +
+            "║  Run: sudo bash vault-setup.sh (or npm update the plugin)  ║\n" +
+            "╠══════════════════════════════════════════════════════════════╣\n" +
+            `║  Policy: ${st.onResolverFailure.padEnd(50)}║\n` +
+            "╚══════════════════════════════════════════════════════════════╝\n"
+          );
+        }
+
+        if (st.onResolverFailure === "warn-and-inline") {
+          // Fallback to inline decryption — security downgrade
+          console.error(`[vault] Falling back to inline decryption for "${toolName}" (security downgrade)`);
+          cred = await readCredentialFile(st.vaultDir, toolName, st.passphrase);
+          securityDowngrade = true;
+          warning += `\n   ⚠️ SECURITY DOWNGRADE: Fell back to inline decryption (bypasses OS-user isolation).`;
+
+          writeAuditEvent({
+            type: "security_downgrade",
+            timestamp: new Date().toISOString(),
+            tool: toolName,
+            reason: "resolver_failure_inline_fallback",
+            originalError: result.error,
+          }, st.vaultDir);
+        } else {
+          // Block — credential not injected
+          cred = null;
+          warning += `\n   Credential NOT injected. The command will run without authentication.`;
+        }
+      }
     } else {
-      // Phase 1: decrypt in-process
+      // Phase 1: decrypt in-process (inline mode)
       cred = await readCredentialFile(st.vaultDir, toolName, st.passphrase);
     }
 
@@ -162,15 +272,18 @@ async function getCredential(
       // Phase 3E: Add to literal match set for hash-based scrubbing
       addLiteralCredential(cred, toolName);
     }
-    return cred;
+    return { credential: cred, warning, securityDowngrade };
   } catch {
-    return null;
+    return { credential: null, warning: null, securityDowngrade: false };
   }
 }
 
 /**
  * Resolve a $vault:toolname reference to the actual credential.
  */
+/** Accumulated resolver warnings for the current tool call */
+let pendingResolverWarnings: string[] = [];
+
 async function resolveVaultRef(
   value: string,
   st: VaultState,
@@ -179,8 +292,11 @@ async function resolveVaultRef(
 ): Promise<string> {
   const match = value.match(/^\$vault:(.+)$/);
   if (!match) return value;
-  const cred = await getCredential(match[1], st, context, command);
-  return cred ?? value; // Return original if can't resolve
+  const result = await getCredential(match[1], st, context, command);
+  if (result.warning) {
+    pendingResolverWarnings.push(result.warning);
+  }
+  return result.credential ?? value; // Return original if can't resolve
 }
 
 /**
@@ -263,12 +379,12 @@ async function handleBeforeToolCall(
           const currentUrl = String(
             params.url ?? params.targetUrl ?? ""
           );
-          const cred = await getCredential(vaultName, state, "browser", currentUrl);
-          if (cred) {
+          const credResult = await getCredential(vaultName, state, "browser", currentUrl);
+          if (credResult.credential) {
             const result = resolveBrowserPassword(
               text,
               currentUrl,
-              cred,
+              credResult.credential,
               rule.domainPin
             );
             if (result.allowed && result.resolvedValue) {
@@ -298,12 +414,12 @@ async function handleBeforeToolCall(
             const currentUrl = String(
               request.url ?? params.url ?? params.targetUrl ?? ""
             );
-            const cred = await getCredential(vaultName, state, "browser", currentUrl);
-            if (cred) {
+            const credResult2 = await getCredential(vaultName, state, "browser", currentUrl);
+            if (credResult2.credential) {
               const resolveResult = resolveBrowserPassword(
                 reqText,
                 currentUrl,
-                cred,
+                credResult2.credential,
                 rule.domainPin
               );
               if (resolveResult.allowed && resolveResult.resolvedValue) {
@@ -330,15 +446,15 @@ async function handleBeforeToolCall(
 
         for (const { vaultToolName, rule } of cookieRules) {
           if (rule.domainPin && shouldInjectCookies(navUrl, rule.domainPin)) {
-            const cred = await getCredential(
+            const credResult3 = await getCredential(
               vaultToolName,
               state,
               "browser-cookie",
               navUrl
             );
-            if (cred) {
+            if (credResult3.credential) {
               try {
-                const cookieData = JSON.parse(cred);
+                const cookieData = JSON.parse(credResult3.credential);
                 let cookies: PlaywrightCookie[];
                 if (Array.isArray(cookieData)) {
                   cookies = cookieData;
@@ -501,6 +617,19 @@ function handleToolResultPersist(
 ): { message?: Record<string, unknown> } | void {
   try {
   if (!state) return;
+
+  // Inject any pending resolver warnings into the result content
+  if (pendingResolverWarnings.length > 0) {
+    const warningBlock = "\n\n" + pendingResolverWarnings.join("\n\n") + "\n";
+    pendingResolverWarnings = [];
+
+    // Append warning to message content so the agent/user sees it
+    if (typeof event.message.content === "string") {
+      event.message.content += warningBlock;
+    } else if (Array.isArray(event.message.content)) {
+      event.message.content.push({ type: "text", text: warningBlock });
+    }
+  }
 
   // Deep-scrub the message object
   const scrubbed = scrubObject(event.message, state.scrubRules) as Record<string, unknown>;
