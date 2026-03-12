@@ -13,13 +13,42 @@ const SECRET = "ghp_TESTSECRET1234567890abcdefghijklmn";
 const REPLACEMENT = "[VAULT:github]";
 const B64 = Buffer.from(SECRET).toString("base64");
 
-// Build the perl script the same way production code does
-const perlBegin = `use MIME::Base64; $s0=decode_base64("${B64}"); $r0="${REPLACEMENT}";`;
-const perlSubs = `s/\\Q$s0\\E/$r0/g`;
-const perlScript = `BEGIN { ${perlBegin} } ${perlSubs}`;
+// Multi-credential test values
+const SECRET2 = "GOCSPX--vuTESTSECRET9876543210xyz";
+const REPLACEMENT2 = "[VAULT:gws-client-secret]";
+const B64_2 = Buffer.from(SECRET2).toString("base64");
 
-function wrapCommand(cmd: string): string {
-  return `set -o pipefail; { ${cmd} ; } 2>&1 | perl -pe '${perlScript}'`;
+const SECRET3 = "[VAULT:slack-bot-token]";
+const REPLACEMENT3 = "[VAULT:slack-bot]";
+const B64_3 = Buffer.from(SECRET3).toString("base64");
+
+// Build perl script for N credentials — mirrors production code exactly
+function buildPerlScript(creds: Array<{secret: string; replacement: string}>): string {
+  const pairs = creds.map((c, i) => {
+    const b64 = Buffer.from(c.secret).toString("base64");
+    return { b64, replacement: c.replacement, index: i };
+  });
+  const perlBegin = pairs
+    .map(p => `use MIME::Base64; $s${p.index}=decode_base64("${p.b64}"); $r${p.index}="${p.replacement}";`)
+    .join(" ");
+  const perlSubs = pairs
+    .map(p => `s/\\Q$s${p.index}\\E/$r${p.index}/g`)
+    .join("; ");
+  return `BEGIN { ${perlBegin} } ${perlSubs}`;
+}
+
+// Single-credential script (used by most tests)
+const perlScript = buildPerlScript([{ secret: SECRET, replacement: REPLACEMENT }]);
+
+// Multi-credential script
+const multiPerlScript = buildPerlScript([
+  { secret: SECRET, replacement: REPLACEMENT },
+  { secret: SECRET2, replacement: REPLACEMENT2 },
+  { secret: SECRET3, replacement: REPLACEMENT3 },
+]);
+
+function wrapCommand(cmd: string, script?: string): string {
+  return `set -o pipefail; { ${cmd} ; } 2>&1 | perl -pe '${script ?? perlScript}'`;
 }
 
 function run(cmd: string, env?: Record<string, string>): { stdout: string; exitCode: number } {
@@ -169,6 +198,105 @@ describe("Perl stdout scrubber", () => {
       const wrapped = wrapCommand("gh api user");
       expect(wrapped).not.toContain(SECRET);
       expect(wrapped).toContain(B64); // base64-encoded only
+    });
+  });
+
+  describe("multi-credential scrubbing", () => {
+    it("should scrub 2 different credentials on the same line", () => {
+      const env = { GH_TOKEN: SECRET, GWS_SECRET: SECRET2 };
+      const result = run(
+        wrapCommand(`echo "$GH_TOKEN $GWS_SECRET"`, multiPerlScript),
+        env
+      );
+      expect(result.stdout).toBe(`${REPLACEMENT} ${REPLACEMENT2}`);
+      expect(result.stdout).not.toContain(SECRET);
+      expect(result.stdout).not.toContain(SECRET2);
+    });
+
+    it("should scrub 3 different credentials across multiple lines", () => {
+      const env = { CRED1: SECRET, CRED2: SECRET2, CRED3: SECRET3 };
+      const result = run(
+        wrapCommand(`echo "$CRED1"; echo "$CRED2"; echo "$CRED3"`, multiPerlScript),
+        env
+      );
+      expect(result.stdout).toContain(REPLACEMENT);
+      expect(result.stdout).toContain(REPLACEMENT2);
+      expect(result.stdout).toContain(REPLACEMENT3);
+      expect(result.stdout).not.toContain(SECRET);
+      expect(result.stdout).not.toContain(SECRET2);
+      expect(result.stdout).not.toContain(SECRET3);
+    });
+
+    it("should scrub only the matching credential and leave others untouched", () => {
+      const env = { GH_TOKEN: SECRET };
+      const result = run(
+        wrapCommand(`echo "$GH_TOKEN and some_other_text"`, multiPerlScript),
+        env
+      );
+      expect(result.stdout).toBe(`${REPLACEMENT} and some_other_text`);
+      expect(result.stdout).not.toContain(SECRET);
+    });
+
+    it("should scrub repeated occurrences of different credentials", () => {
+      const env = { CRED1: SECRET, CRED2: SECRET2 };
+      const result = run(
+        wrapCommand(`echo "$CRED1 $CRED2 $CRED1 $CRED2"`, multiPerlScript),
+        env
+      );
+      expect(result.stdout).toBe(`${REPLACEMENT} ${REPLACEMENT2} ${REPLACEMENT} ${REPLACEMENT2}`);
+    });
+
+    it("should handle multi-credential with one containing special chars", () => {
+      const specialSecret = "sk_live_abc$def'ghi";
+      const creds = [
+        { secret: SECRET, replacement: REPLACEMENT },
+        { secret: specialSecret, replacement: "[VAULT:stripe]" },
+      ];
+      const script = buildPerlScript(creds);
+      const env = { GH_TOKEN: SECRET, STRIPE_KEY: specialSecret };
+      const result = run(
+        wrapCommand(`echo "$GH_TOKEN"; echo '${specialSecret.replace(/'/g, "'\\''")}'`, script),
+        env
+      );
+      expect(result.stdout).not.toContain(SECRET);
+      expect(result.stdout).not.toContain(specialSecret);
+      expect(result.stdout).toContain(REPLACEMENT);
+      expect(result.stdout).toContain("[VAULT:stripe]");
+    });
+
+    it("should not contain any raw credentials in the wrapped command string", () => {
+      const wrapped = wrapCommand("some command", multiPerlScript);
+      expect(wrapped).not.toContain(SECRET);
+      expect(wrapped).not.toContain(SECRET2);
+      expect(wrapped).not.toContain(SECRET3);
+      // Should contain base64 versions
+      expect(wrapped).toContain(B64);
+      expect(wrapped).toContain(B64_2);
+      expect(wrapped).toContain(B64_3);
+    });
+
+    it("should preserve exit code with multi-credential scrubbing", () => {
+      const result = run(wrapCommand(`exit 7`, multiPerlScript));
+      expect(result.exitCode).toBe(7);
+    });
+
+    it("should handle empty output with multi-credential script", () => {
+      const result = run(wrapCommand(`true`, multiPerlScript));
+      expect(result.stdout).toBe("");
+      expect(result.exitCode).toBe(0);
+    });
+  });
+
+  describe("system compatibility", () => {
+    it("should verify perl is available", () => {
+      const result = run("perl -v | head -2");
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout.toLowerCase()).toContain("perl");
+    });
+
+    it("should verify MIME::Base64 module is available", () => {
+      const result = run("perl -e 'use MIME::Base64; print \"ok\"'");
+      expect(result.stdout).toBe("ok");
     });
   });
 });
