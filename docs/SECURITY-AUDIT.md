@@ -127,10 +127,12 @@ Gap: Tests simulate the hook dispatch behavior but don't actually exercise the O
 
 **Threat:** Credentials injected as env vars persist in gateway's process.env.
 
-**Code Defenses:**
-- `src/index.ts` line 393: `process.env[envKey] = resolved` — credentials ARE set on process.env during injection
-- `src/index.ts` lines 478-484: `handleAfterToolCall()` cleans up injected env vars via `delete process.env[envKey]`
+**Code Defenses (updated 2026-03-12):**
+- Credentials injected ONLY via `params.env` — no `process.env` mutation
+- Perl stdout scrubber pipes subprocess output through credential replacement
 - `src/scrubber.ts` `scrubEnvVars()`: ENV_VAR_PATTERN catches `KEY=[VAULT:env-redacted] patterns in output
+
+**Status:** RESOLVED — process.env contamination eliminated entirely.
 
 **Test Coverage:**
 - `tests/adversarial.test.ts` "Attack Vector 4": Env variable scrubbing bypass tests
@@ -189,9 +191,7 @@ Known gaps (all documented in adversarial tests): base64-encoded, URL-encoded, h
 
 **Resolution:** Credentials are now injected ONLY via `params.env` (passed directly to the subprocess spawn). No `process.env` mutation, no command string prepend. A Perl stdout scrubber pipes subprocess output through credential value replacement before exec captures it. Credentials are base64-encoded in the perl command, never appearing in plaintext in the command string.
 
-**Recommendation:**
-- Remove `process.env[envKey] = resolved` (line 393) — it's redundant with the `params.env` injection on line 391 and the command prepend on line 399
-- If process.env injection is necessary for some tools, document the race window in THREAT-MODEL.md
+**Recommendation:** No further action needed — fully resolved.
 
 **Test Gap:** No test verifies that `process.env` is clean during/after injection.
 
@@ -300,28 +300,13 @@ Only Telegram bot tokens and Slack bot tokens have global scrub patterns. Other 
 
 ---
 
-### F-8: Multi-Command Injection May Interact with Shell Metacharacters (Informational)
+### F-8: Multi-Command Injection May Interact with Shell Metacharacters (Informational) — RESOLVED
 
-**Severity: Informational**
-**Location:** `src/index.ts`, lines 396-399
+**Severity: Informational → RESOLVED (commit 630c7a5)**
 
-The command prepend logic constructs:
-```typescript
-params.command = `${envExports.join(" && ")} && ${params.command}`;
-```
+**Original issue:** The command prepend logic (`export KEY=[VAULT:env-redacted] && command`) embedded credentials in the command string with shell escaping that could interact with different shells or special characters.
 
-The credential value is escaped with single-quote shell escaping (line 397):
-```typescript
-const escaped = resolved.replace(/'/g, "'\\''");
-envExports.push(`export ${envKey}='${escaped}'`);
-```
-
-This escaping handles single quotes correctly for bash. However:
-- If the exec tool uses a different shell (e.g., sh, zsh, fish), the escaping may behave differently
-- If the credential contains null bytes, backslashes, or other special characters, edge cases may arise
-- The `envKey` is not escaped — a malicious injection rule with a crafted env var name could break the shell syntax
-
-**Recommendation:** The current escaping is adequate for standard bash usage. Consider documenting the shell assumption.
+**Resolution:** Command prepend removed entirely. Credentials are now injected via `params.env` only. The Perl scrubber uses base64 encoding for credentials, eliminating all shell escaping concerns. No credential value appears in any command string.
 
 ### F-9: LLM Receives Unscrubbed Tool Output (High)
 
