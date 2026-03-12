@@ -16,7 +16,7 @@ The OpenClaw Credential Vault implements a well-designed defense-in-depth archit
 The vault is suitable for its stated purpose (beta release for credential management in AI agent frameworks). The primary residual risks are:
 
 1. **process.env contamination during injection** — credentials briefly exist in the gateway process environment (Medium severity)
-2. **Machine-key derivation with low entropy** — acknowledged limitation, mitigated by binary mode (Medium severity)
+2. **Machine-key derivation uses low-entropy inputs** (hostname, uid, timestamp) — encryption alone is insufficient against a local attacker. Binary mode mitigates by adding OS-user file isolation, making encrypted files inaccessible regardless of key strength (Medium severity)
 3. **Fail-open scrubbing** — design choice with acceptable trade-offs but creates a real exposure window on scrubber bugs (Medium severity)
 4. **No path traversal validation in Rust resolver** — setuid binary accepts arbitrary tool names from stdin (Medium severity)
 5. **Mocked concurrent test coverage** — concurrent resolution tests don't exercise real crypto/IO paths (Low severity)
@@ -494,7 +494,7 @@ Comparison with the prior audit dated 2026-03-11.
 
 | Prior Limitation | Current Status |
 |-----------------|----------------|
-| Machine-key entropy | Unchanged — still acknowledged |
+| Machine-key entropy | Unchanged — low-entropy inputs (hostname, uid, timestamp); encryption alone insufficient against local attacker. Binary mode sidesteps via OS-user file isolation. |
 | Fail-open scrubbing | Unchanged — this audit adds alerting gap (F-5) |
 | Scrubbing blind spots (base64, URL-encode, split) | Unchanged — all documented in adversarial tests |
 | No gateway log scanning | Unchanged — still not built |
