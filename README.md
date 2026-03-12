@@ -80,6 +80,8 @@ Agent sees clean PR listings — no credential anywhere in context
 | Linux arm64 | Inline mode only (resolver binary coming soon) |
 | macOS | Inline mode only |
 
+**Sandbox mode:** Not yet tested with OpenClaw's Docker sandbox. The vault hooks run in the gateway process (not inside the sandbox container), so they should work in theory, but no end-to-end verification has been done. See [Specification](docs/SPEC.md#sandbox-compatibility) for details.
+
 ## Learn More
 
 - **[Architecture](docs/ARCHITECTURE.md)** — Component map, Mermaid diagrams, hook pipeline, Rust resolver deep dive

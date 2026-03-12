@@ -9,6 +9,12 @@ import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+/**
+ * Protocol version — must match the Rust resolver binary.
+ * Increment when the stdin/stdout JSON schema changes.
+ */
+export const PROTOCOL_VERSION = 1;
+
 /** Default paths to check for the resolver binary (in priority order) */
 const RESOLVER_PATHS = [
   "/usr/local/bin/openclaw-vault-resolver",
@@ -62,6 +68,7 @@ export async function resolveViaRustBinary(
     tool: toolName,
     context,
     command,
+    protocol_version: PROTOCOL_VERSION,
   });
 
   return new Promise((resolve) => {

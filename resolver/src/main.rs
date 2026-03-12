@@ -36,6 +36,10 @@ const ARGON2_ITERATIONS: u32 = 3;
 const ARGON2_PARALLELISM: u32 = 1;
 const ARGON2_HASH_LENGTH: usize = 32;
 
+/// Protocol version — must match between TypeScript plugin and Rust resolver.
+/// Increment when the stdin/stdout JSON schema changes.
+const PROTOCOL_VERSION: u32 = 1;
+
 #[derive(Deserialize)]
 struct Request {
     tool: String,
@@ -43,12 +47,16 @@ struct Request {
     context: Option<String>,
     #[allow(dead_code)]
     command: Option<String>,
+    /// Protocol version from the TypeScript plugin. If present and mismatched,
+    /// the resolver returns a clear error instead of silently producing wrong results.
+    protocol_version: Option<u32>,
 }
 
 #[derive(Serialize)]
 struct SuccessResponse {
     credential: String,
     expires: Option<String>,
+    protocol_version: u32,
 }
 
 #[derive(Serialize)]
@@ -290,6 +298,21 @@ fn main() {
         Err(e) => write_error(EXIT_NOT_FOUND, "EINVAL", &format!("Invalid JSON input: {}", e)),
     };
 
+    // 1b. Protocol version check — if the plugin sends a version, verify compatibility
+    if let Some(client_version) = request.protocol_version {
+        if client_version != PROTOCOL_VERSION {
+            write_error(
+                EXIT_NOT_FOUND,
+                "EPROTO",
+                &format!(
+                    "Protocol version mismatch: plugin sent v{}, resolver expects v{}. \
+                     Please rebuild the resolver binary to match the plugin version.",
+                    client_version, PROTOCOL_VERSION
+                ),
+            );
+        }
+    }
+
     // 2. Find vault metadata and credential file
     let (meta, cred_path) = match find_vault_paths(&request.tool) {
         Ok(v) => v,
@@ -338,6 +361,7 @@ fn main() {
     let response = SuccessResponse {
         credential,
         expires: None,
+        protocol_version: PROTOCOL_VERSION,
     };
     let output = serde_json::to_string(&response).unwrap_or_else(|_| {
         process::exit(EXIT_DECRYPT_FAILED);
@@ -506,9 +530,24 @@ mod tests {
         let resp = SuccessResponse {
             credential: "test-key-123".to_string(),
             expires: None,
+            protocol_version: PROTOCOL_VERSION,
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("test-key-123"));
         assert!(json.contains("\"expires\":null"));
+        assert!(json.contains("\"protocol_version\":1"));
+    }
+
+    /// Test protocol version mismatch detection in request parsing.
+    #[test]
+    fn test_request_with_protocol_version() {
+        let json = r#"{"tool": "github", "protocol_version": 1}"#;
+        let req: Request = serde_json::from_str(json).unwrap();
+        assert_eq!(req.protocol_version, Some(1));
+
+        // Missing protocol_version should parse fine (backward compat)
+        let json_no_version = r#"{"tool": "github"}"#;
+        let req2: Request = serde_json::from_str(json_no_version).unwrap();
+        assert_eq!(req2.protocol_version, None);
     }
 }

@@ -216,6 +216,20 @@ TypeScript spawns the Rust resolver (`openclaw-vault-resolver`) as a setuid subp
 - Resolver applies seccomp filter after decryption (restricts to read/write/exit/brk/mmap/munmap/close/fstat/futex/getrandom)
 - Resolver drops all Linux capabilities after writing to stdout
 
+### Resolver Protocol Versioning
+
+The TypeScript plugin and Rust resolver communicate via a JSON protocol on stdin/stdout. Both sides include a `protocol_version` field to detect version mismatches:
+
+- The plugin sends `protocol_version` in the JSON request
+- The resolver checks it against its own `PROTOCOL_VERSION` constant
+- On mismatch, the resolver returns a clear error: `"Protocol version mismatch: plugin sent vX, resolver expects vY. Please rebuild the resolver binary to match the plugin version."`
+- If the plugin omits `protocol_version` (old versions), the resolver accepts the request for backward compatibility
+- The resolver includes `protocol_version` in the success response for the plugin to verify
+
+**Current protocol version: 1**
+
+Increment the version in both `src/resolver.ts` and `resolver/src/main.rs` when the JSON schema changes.
+
 ### Mode Selection
 
 The mode is set in `tools.yaml`:
@@ -555,6 +569,26 @@ When any `vault` CLI command modifies config:
 | Linux x64 | ✅ | ✅ |
 | Linux arm64 | ✅ | Resolver binary not yet cross-compiled |
 | macOS | ✅ | setuid model not applicable (use inline) |
+
+---
+
+## Sandbox Compatibility
+
+**Status: Not yet tested with real gateway sandbox.**
+
+The vault plugin hooks run in the gateway process, not inside the sandbox container. This means:
+
+- **Credential resolution** happens in the gateway, before the command reaches the sandbox
+- **Environment injection** passes injected env vars to the sandbox subprocess via `params.env`
+- **Output scrubbing** runs in the gateway on output returned from the sandbox
+
+In theory, this architecture should work with sandbox mode because hooks operate at the gateway level. However:
+
+- **No end-to-end testing** has been done with `sandbox.mode: "non-main"` or `sandbox.mode: "all"` enabled
+- Sandbox tests in the test suite use mocked sandbox execution (simulated env injection and output flow)
+- It is unknown whether the gateway correctly passes `params.env` overrides into Docker containers in all sandbox configurations
+
+**Recommendation:** If using sandbox mode, test `vault test <tool>` with sandbox enabled and verify credentials inject correctly before relying on it in production.
 
 ---
 
