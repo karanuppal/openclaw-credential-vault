@@ -521,12 +521,8 @@ export function registerCliCommands(program: CliProgram): void {
       // Encrypt and store
       const filePath = await writeCredentialFile(vaultDir, tool, options.key, passphrase);
       if (config.resolverMode === "binary") {
-        syncToSystemVault(vaultDir, tool);
-        // Verify sync succeeded
-        const systemPath = "/var/lib/openclaw-vault/" + tool + ".enc";
-        try {
-          fs.accessSync(systemPath, fs.constants.F_OK);
-        } catch {
+        const syncOk = syncToSystemVault(vaultDir, tool);
+        if (!syncOk) {
           console.log(`\n⚠ Warning: Credential stored locally but NOT synced to system vault.`);
           console.log(`  The binary resolver won't find this credential.`);
           console.log(`  Fix: Run 'sudo bash vault-setup.sh'`);

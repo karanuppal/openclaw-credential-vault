@@ -176,19 +176,52 @@ const SYSTEM_VAULT_DIR = "/var/lib/openclaw-vault";
  * Only needed in binary resolver mode — the setuid binary reads from the system dir.
  * Best-effort: logs warning on failure, never throws.
  */
-export function syncToSystemVault(vaultDir: string, toolName: string): void {
+export function syncToSystemVault(vaultDir: string, toolName: string): boolean {
   try {
     const srcPath = path.join(vaultDir, `${toolName}.enc`);
-    const destPath = path.join(SYSTEM_VAULT_DIR, `${toolName}.enc`);
-    if (!fs.existsSync(srcPath)) return;
+    if (!fs.existsSync(srcPath)) return false;
+
+    // Try using the setuid resolver binary for sync (runs as openclaw-vault user)
+    const resolverPath = findResolverBinary();
+    if (resolverPath) {
+      const data = fs.readFileSync(srcPath);
+      const b64 = data.toString("base64");
+      const input = JSON.stringify({ tool: toolName, action: "sync", data: b64, protocol_version: 1 });
+      try {
+        const { execSync } = require("child_process");
+        execSync(`echo '${input.replace(/'/g, "'\\''")}' | "${resolverPath}"`, {
+          encoding: "utf-8",
+          timeout: 10000,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+        // Also sync .vault-meta.json
+        const metaSrc = path.join(vaultDir, ".vault-meta.json");
+        if (fs.existsSync(metaSrc)) {
+          const metaData = fs.readFileSync(metaSrc);
+          const metaB64 = metaData.toString("base64");
+          const metaInput = JSON.stringify({ tool: toolName, action: "sync-meta", data: metaB64, protocol_version: 1 });
+          execSync(`echo '${metaInput.replace(/'/g, "'\\''")}' | "${resolverPath}"`, {
+            encoding: "utf-8",
+            timeout: 10000,
+            stdio: ["pipe", "pipe", "pipe"],
+          });
+        }
+        return true;
+      } catch (resolverErr: unknown) {
+        const msg = resolverErr instanceof Error ? resolverErr.message : String(resolverErr);
+        console.error(`[vault] ⚠ Resolver sync failed, falling back to direct copy: ${msg}`);
+      }
+    }
+
+    // Fallback: direct file copy (works if user has write access to system vault)
     if (!fs.existsSync(SYSTEM_VAULT_DIR)) {
       console.error(`[vault] ⚠ System vault dir ${SYSTEM_VAULT_DIR} not found. Run 'sudo bash vault-setup.sh' to fix.`);
-      return;
+      return false;
     }
+    const destPath = path.join(SYSTEM_VAULT_DIR, `${toolName}.enc`);
     const tmpPath = destPath + ".tmp";
     fs.copyFileSync(srcPath, tmpPath);
     fs.renameSync(tmpPath, destPath);
-    // Also sync .vault-meta.json if needed
     const metaSrc = path.join(vaultDir, ".vault-meta.json");
     const metaDest = path.join(SYSTEM_VAULT_DIR, ".vault-meta.json");
     if (fs.existsSync(metaSrc)) {
@@ -200,6 +233,7 @@ export function syncToSystemVault(vaultDir: string, toolName: string): void {
         fs.renameSync(metaTmp, metaDest);
       }
     }
+    return true;
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes("EACCES") || msg.includes("permission")) {
@@ -209,7 +243,20 @@ export function syncToSystemVault(vaultDir: string, toolName: string): void {
     } else {
       console.error(`[vault] ⚠ Could not sync to system vault: ${msg}`);
     }
+    return false;
   }
+}
+
+/** Find the installed setuid resolver binary */
+function findResolverBinary(): string | null {
+  const paths = [
+    "/usr/local/bin/openclaw-vault-resolver",
+    path.join(__dirname, "..", "bin", "linux-x64", "openclaw-vault-resolver"),
+  ];
+  for (const p of paths) {
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
 }
 
 /**
@@ -218,6 +265,25 @@ export function syncToSystemVault(vaultDir: string, toolName: string): void {
  */
 export function removeFromSystemVault(toolName: string): void {
   try {
+    // Try using the setuid resolver binary (runs as openclaw-vault user)
+    const resolverPath = findResolverBinary();
+    if (resolverPath) {
+      const input = JSON.stringify({ tool: toolName, action: "remove", protocol_version: 1 });
+      try {
+        const { execSync } = require("child_process");
+        execSync(`echo '${input.replace(/'/g, "'\\''")}' | "${resolverPath}"`, {
+          encoding: "utf-8",
+          timeout: 10000,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+        return;
+      } catch (resolverErr: unknown) {
+        const msg = resolverErr instanceof Error ? resolverErr.message : String(resolverErr);
+        console.error(`[vault] ⚠ Resolver remove failed, falling back to direct delete: ${msg}`);
+      }
+    }
+
+    // Fallback: direct delete (works if user has write access)
     const destPath = path.join(SYSTEM_VAULT_DIR, `${toolName}.enc`);
     if (fs.existsSync(destPath)) {
       fs.unlinkSync(destPath);

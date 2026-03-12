@@ -43,6 +43,10 @@ const PROTOCOL_VERSION: u32 = 1;
 #[derive(Deserialize)]
 struct Request {
     tool: String,
+    /// Action: "resolve" (default/omitted), "sync", or "remove"
+    action: Option<String>,
+    /// For sync action: base64-encoded encrypted credential data
+    data: Option<String>,
     #[allow(dead_code)]
     context: Option<String>,
     #[allow(dead_code)]
@@ -277,6 +281,60 @@ fn drop_capabilities() {
     // No-op on non-Linux
 }
 
+/// Simple base64 decode (standard alphabet)
+fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
+    use std::collections::HashMap;
+    let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut table: HashMap<u8, u8> = HashMap::new();
+    for (i, &c) in alphabet.iter().enumerate() {
+        table.insert(c, i as u8);
+    }
+
+    let input = input.trim().replace('\n', "").replace('\r', "");
+    let input = input.trim_end_matches('=');
+    let mut output = Vec::new();
+    let bytes: Vec<u8> = input.bytes().collect();
+
+    for chunk in bytes.chunks(4) {
+        let mut buf: u32 = 0;
+        let mut count = 0;
+        for &b in chunk {
+            if let Some(&val) = table.get(&b) {
+                buf = (buf << 6) | val as u32;
+                count += 1;
+            }
+        }
+        match count {
+            4 => {
+                output.push((buf >> 16) as u8);
+                output.push((buf >> 8) as u8);
+                output.push(buf as u8);
+            }
+            3 => {
+                buf <<= 6;
+                output.push((buf >> 16) as u8);
+                output.push((buf >> 8) as u8);
+            }
+            2 => {
+                buf <<= 12;
+                output.push((buf >> 16) as u8);
+            }
+            _ => return Err("Invalid base64 input".to_string()),
+        }
+    }
+    Ok(output)
+}
+
+/// Generate a pseudo-random byte for secure delete overwrite
+fn rand_byte() -> u8 {
+    use std::time::SystemTime;
+    let t = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+    (t & 0xFF) as u8
+}
+
 fn write_error(exit_code: i32, error_type: &str, message: &str) -> ! {
     let err = ErrorResponse {
         error: error_type.to_string(),
@@ -313,7 +371,91 @@ fn main() {
         }
     }
 
-    // 2. Find vault metadata and credential file
+    // 1c. Validate tool name — prevent path traversal
+    if request.tool.contains('/')
+        || request.tool.contains('\\')
+        || request.tool.contains("..")
+        || request.tool.starts_with('.')
+    {
+        write_error(EXIT_NOT_FOUND, "EINVAL", "Invalid tool name: contains path traversal characters");
+    }
+
+    // 2a. Handle sync action — write encrypted data to system vault
+    let action = request.action.as_deref().unwrap_or("resolve");
+    if action == "sync" {
+        let system_dir = Path::new("/var/lib/openclaw-vault");
+        if !system_dir.exists() {
+            write_error(EXIT_NOT_FOUND, "ENOENT", "System vault directory does not exist");
+        }
+        let data_b64 = request.data.as_deref().unwrap_or("");
+        if data_b64.is_empty() {
+            write_error(EXIT_NOT_FOUND, "EINVAL", "Sync action requires 'data' field with base64-encoded credential");
+        }
+        let data = match base64_decode(data_b64) {
+            Ok(d) => d,
+            Err(e) => write_error(EXIT_DECRYPT_FAILED, "EINVAL", &format!("Invalid base64 data: {}", e)),
+        };
+        let dest_path = system_dir.join(format!("{}.enc", request.tool));
+        let tmp_path = system_dir.join(format!("{}.enc.tmp", request.tool));
+        if let Err(e) = fs::write(&tmp_path, &data) {
+            write_error(EXIT_PERMISSION_DENIED, "EIO", &format!("Failed to write temp file: {}", e));
+        }
+        if let Err(e) = fs::rename(&tmp_path, &dest_path) {
+            let _ = fs::remove_file(&tmp_path);
+            write_error(EXIT_PERMISSION_DENIED, "EIO", &format!("Failed to rename temp file: {}", e));
+        }
+        // Also sync .vault-meta.json if provided as a second data field
+        println!("{{\"ok\":true,\"action\":\"sync\",\"tool\":\"{}\"}}", request.tool);
+        process::exit(EXIT_SUCCESS);
+    }
+
+    // 2b. Handle remove action — delete encrypted file from system vault
+    if action == "remove" {
+        let system_dir = Path::new("/var/lib/openclaw-vault");
+        let enc_path = system_dir.join(format!("{}.enc", request.tool));
+        if enc_path.exists() {
+            // Secure delete: overwrite with random data before unlinking
+            if let Ok(metadata) = fs::metadata(&enc_path) {
+                let size = metadata.len() as usize;
+                let random_data: Vec<u8> = (0..size).map(|_| rand_byte()).collect();
+                let _ = fs::write(&enc_path, &random_data);
+            }
+            if let Err(e) = fs::remove_file(&enc_path) {
+                write_error(EXIT_PERMISSION_DENIED, "EIO", &format!("Failed to remove file: {}", e));
+            }
+        }
+        println!("{{\"ok\":true,\"action\":\"remove\",\"tool\":\"{}\"}}", request.tool);
+        process::exit(EXIT_SUCCESS);
+    }
+
+    // 2c. Handle sync-meta action — sync .vault-meta.json
+    if action == "sync-meta" {
+        let system_dir = Path::new("/var/lib/openclaw-vault");
+        if !system_dir.exists() {
+            write_error(EXIT_NOT_FOUND, "ENOENT", "System vault directory does not exist");
+        }
+        let data_b64 = request.data.as_deref().unwrap_or("");
+        if data_b64.is_empty() {
+            write_error(EXIT_NOT_FOUND, "EINVAL", "sync-meta action requires 'data' field");
+        }
+        let data = match base64_decode(data_b64) {
+            Ok(d) => d,
+            Err(e) => write_error(EXIT_DECRYPT_FAILED, "EINVAL", &format!("Invalid base64 data: {}", e)),
+        };
+        let dest_path = system_dir.join(".vault-meta.json");
+        let tmp_path = system_dir.join(".vault-meta.json.tmp");
+        if let Err(e) = fs::write(&tmp_path, &data) {
+            write_error(EXIT_PERMISSION_DENIED, "EIO", &format!("Failed to write: {}", e));
+        }
+        if let Err(e) = fs::rename(&tmp_path, &dest_path) {
+            let _ = fs::remove_file(&tmp_path);
+            write_error(EXIT_PERMISSION_DENIED, "EIO", &format!("Failed to rename: {}", e));
+        }
+        println!("{{\"ok\":true,\"action\":\"sync-meta\"}}");
+        process::exit(EXIT_SUCCESS);
+    }
+
+    // 3. Find vault metadata and credential file (resolve action)
     let (meta, cred_path) = match find_vault_paths(&request.tool) {
         Ok(v) => v,
         Err((code, msg)) => write_error(code, "ENOENT", &msg),
