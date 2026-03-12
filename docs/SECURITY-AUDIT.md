@@ -21,7 +21,7 @@ The vault is suitable for its stated purpose (beta release for credential manage
 4. **No path traversal validation in Rust resolver** — setuid binary accepts arbitrary tool names from stdin (Medium severity)
 5. **Mocked concurrent test coverage** — concurrent resolution tests don't exercise real crypto/IO paths (Low severity)
 
-No critical vulnerabilities were found. All previously identified bugs (12 from the prior audit) remain fixed. The test suite is comprehensive at 540 tests with dedicated adversarial, false-positive, and sub-agent isolation coverage.
+No critical vulnerabilities were found. All previously identified bugs (12 from the prior audit) remain fixed. The test suite is comprehensive at 576 tests across 29 files with dedicated adversarial, false-positive, sub-agent isolation, and resolver versioning coverage.
 
 ---
 
@@ -500,7 +500,7 @@ The following changes were implemented during the doc review session after the a
 ### What Was Removed
 
 - The prior audit's "Gap Analysis" section listed 7 gaps all marked "Closed". This audit replaces that section with a new gap analysis reflecting current findings.
-- The prior audit's manual testing section (58 test cases) is not reproduced here as it represents a point-in-time validation. The automated test suite (540 tests) provides ongoing coverage.
+- The prior audit's manual testing section (58 test cases) is not reproduced here as it represents a point-in-time validation. The automated test suite (576 tests) provides ongoing coverage.
 
 ### Status of Prior Known Limitations
 

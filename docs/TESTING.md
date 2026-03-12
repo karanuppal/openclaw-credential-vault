@@ -1,6 +1,6 @@
 # Testing
 
-> 27 test files, 540 tests. Here's what they cover and how to run them.
+> 29 test files, 576 tests. Here's what they cover and how to run them.
 
 ---
 
@@ -29,9 +29,9 @@ npm run test:cross
 
 | Status | Count |
 |--------|-------|
-| **Passing** | 536 |
+| **Passing** | 576 |
 | **Failing** | 4 (performance timing — see below) |
-| **Total** | 540 |
+| **Total** | 580 |
 
 The 4 failing tests are scrubbing performance benchmarks that expect <10ms for 1MB payloads with 20 patterns. On shared CI VMs, the actual time is ~16-20ms. These thresholds are aspirational targets for dedicated hardware, not bugs. On dedicated machines, all 4 pass. See [Performance Tests](#performance-tests) for details.
 
@@ -315,6 +315,21 @@ Tests that sub-agents get the same security treatment:
 - Sub-agent can't access credentials for tools not matching its commands
 - Multiple concurrent sub-agents with different credentials
 
+### Unit Tests — Resolver Protocol Versioning
+
+**File:** `resolver-versioning.test.ts` (35 tests)
+
+Tests the protocol versioning and failure handling between the TypeScript plugin and Rust resolver:
+- Warning message generation for all error types (PROTOCOL_MISMATCH, NOT_FOUND, DECRYPT_FAILED, PERMISSION_DENIED, UNKNOWN)
+- Direction-specific fix instructions: plugin newer → suggests `vault-setup.sh`; resolver newer → suggests `npm update`; unknown → suggests both
+- Protocol version constant validation
+- Resolver binary discovery (custom path, fallback, nonexistent)
+- Structured ResolverResult typing (success and error variants)
+- Live resolver binary tests (accepts protocol_version field, returns it in response)
+- Warning injection into tool output (string content, array content, multiple warnings, no-op when clean)
+- Audit event writing: `resolver_failure` and `security_downgrade` events persist to audit log
+- `onResolverFailure` config defaults to `"block"`
+
 ### Adversarial Tests — Concurrent Access
 
 **File:** `concurrent.test.ts` (5 tests)
@@ -370,12 +385,12 @@ Which components are tested by which test categories:
 | browser.ts | ✅ browser, browser-password, browser-cookie | ✅ cli-browser | ✅ adversarial (domain pinning) | — |
 | audit.ts | ✅ audit, audit-log | ✅ e2e | — | — |
 | vault-status.ts | — | ✅ rotation (status data) | — | — |
-| resolver.ts | — | ✅ e2e (Phase 2), protocol versioning | — | — |
+| resolver.ts | — | ✅ e2e (Phase 2), protocol versioning, resolver-versioning | — | — |
 | index.ts (hooks) | — | ✅ hooks, e2e, sandbox-e2e | ✅ write-edit-scrub, compaction-scrub, subagent-isolation, concurrent | — |
 
 ### Test file by category
 
-**Unit (173 tests):** crypto, scrubber, scrubber-advanced, literal-scrub, env-scrub, registry, config, guesser, format-guessing, audit, audit-log
+**Unit (208 tests):** crypto, scrubber, scrubber-advanced, literal-scrub, env-scrub, registry, config, guesser, format-guessing, audit, audit-log, resolver-versioning
 
 **Integration (76 tests):** hooks, e2e, sandbox-e2e, cli-browser, cross-compat, rotation
 

@@ -87,7 +87,7 @@ Agent sees clean PR listings — no credential anywhere in context
 - **[Architecture](docs/ARCHITECTURE.md)** — Component map, Mermaid diagrams, hook pipeline, Rust resolver deep dive
 - **[Threat Model](docs/THREAT-MODEL.md)** — What we defend against, what we don't, and design trade-offs
 - **[Specification](docs/SPEC.md)** — Encryption scheme, hook behavior, CLI reference, config schemas
-- **[Testing](docs/TESTING.md)** — 540 tests across 27 files: unit, integration, adversarial, performance
+- **[Testing](docs/TESTING.md)** — 576 tests across 29 files: unit, integration, adversarial, performance, resolver versioning
 - **[Security Audit](docs/SECURITY-AUDIT.md)** — Validation methodology, results, bugs found and fixed
 
 ## License
