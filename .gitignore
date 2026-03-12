@@ -3,3 +3,7 @@ dist/
 resolver/target/
 *.enc
 *.tgz
+
+# Experiment logs (local only)
+docs/SCRUB-EXPERIMENTS*.md
+docs/MESSAGE-SENDING-TEST-PLAN.md
