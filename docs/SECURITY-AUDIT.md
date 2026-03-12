@@ -333,6 +333,35 @@ This escaping handles single quotes correctly for bash. However:
 
 **Recommendation:** The current escaping is adequate for standard bash usage. Consider documenting the shell assumption.
 
+### F-9: LLM Receives Unscrubbed Tool Output (High)
+
+**Severity: High**
+**Location:** OpenClaw gateway architecture (not vault-specific code)
+
+**Finding:** The vault scrubs credentials at `tool_result_persist`, `before_message_write`, and `message_sending` hooks. However, the LLM receives the raw tool result **before** `tool_result_persist` runs. The persist hook only scrubs what gets written to the session transcript — not what the LLM sees in real-time during inference.
+
+**Attack path:**
+1. Agent calls `exec` with a command matching an injection rule (e.g., `gws auth status`)
+2. Vault injects credentials via env vars / command prepend
+3. Tool executes and returns output containing the credential value
+4. **LLM receives the raw output with the actual credential** — no scrubbing has occurred
+5. LLM may echo the credential into a chat message (as demonstrated 2026-03-12)
+6. `message_sending` hook scrubs the outbound message — but the LLM already "knows" the credential
+
+**Impact:** The credential is in the LLM's context window. Even with `message_sending` scrubbing the outbound message, the LLM can be prompt-injected to encode or exfiltrate the credential value. The scrubbing defense is weaker than documented — it's transcript-and-outbound scrubbing, NOT inference-time scrubbing.
+
+**Root cause:** OpenClaw has no `transform_tool_result` hook between tool execution and LLM inference. The hooks available are:
+- `before_tool_call` — can modify params, block the call (pre-execution)
+- `after_tool_call` — observe-only, cannot modify result
+- `tool_result_persist` — modifies what's written to transcript (post-inference)
+
+**Demonstrated vulnerability (2026-03-12):** The LLM (MillieClaw) ran `openclaw vault show gws-client-id`, received the scrub pattern (which IS the real credential value), and posted it verbatim into a Telegram group chat. The `message_sending` hook would have scrubbed the pattern-matched credential value, but the `vault show` output contained the regex pattern — which is the credential itself, not matching the regex. The LLM also had the raw credential from a prior `env | grep` test.
+
+**Recommendation:**
+1. **Immediate:** Document this limitation honestly in THREAT-MODEL.md and README
+2. **Short-term:** Request an OpenClaw `transform_tool_result` hook (or `after_tool_call` with modification capability) — this would allow scrubbing before the LLM sees tool output
+3. **Medium-term:** Consider scrubbing inside the `before_tool_call` hook by wrapping the exec tool's command to pipe output through a scrubber process, though this adds complexity and may break binary output
+
 ---
 
 ## Gaps & Recommendations

