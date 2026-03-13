@@ -44,6 +44,10 @@ RUN mkdir -p ~/.npm-global \
   && npm config set prefix ~/.npm-global
 ENV PATH="/home/testuser/.npm-global/bin:${PATH}"
 ENV REPO_ROOT="/workspace"
-ENV NODE_OPTIONS="--max-old-space-size=512"
+ENV NODE_OPTIONS="--max-old-space-size=2048"
+
+# Pre-install the vault plugin from npm (avoids runtime npm timeouts)
+# Install path tests (I1-I4) will uninstall first, then test their method
+RUN openclaw plugins install openclaw-credential-vault || true
 
 ENTRYPOINT ["bash"]
