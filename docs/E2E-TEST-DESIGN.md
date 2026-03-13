@@ -31,7 +31,17 @@ We ARE testing: our plugin installs correctly, vault commands work, injection + 
 - **I3 (npm + pin):** `openclaw plugins install /e2e/plugin.tgz --pin`
 - **I4 (source link):** `openclaw plugins install --link /workspace`
 
-All complete in <5 seconds.
+All complete in <5 seconds. npm still resolves the 2 runtime deps (argon2, yaml) from registry — seconds, not minutes.
+
+### What was slow before
+1. `npm install -g openclaw` in every container (~3-5 min) — now baked into base image, built once
+2. `openclaw plugins install` from npm registry (~2-3 min) — now from local tarball (~2 sec)
+3. The actual tests were always fast (~30 sec). 95% of time was package downloads.
+
+### Staleness strategy
+- **Base image** (Debian 12 + Node 22 + OpenClaw): rebuild manually when OpenClaw ships a new version
+- **Plugin dependencies** (argon2, yaml): resolved fresh every test run from the tarball's `^` ranges — automatically catches dep breakage
+- **Plugin code**: always fresh — `npm pack` runs from current working tree before every test
 
 ---
 
