@@ -33,12 +33,14 @@ Every cell is a fresh container. Each runs the **complete lifecycle test suite**
 
 |  | S1 (machine+inline) | S2 (machine+binary) | S3 (passphrase+inline) | S4 (passphrase+binary) |
 |---|---|---|---|---|
-| **I1** (curl script) | ✓ | ✓ | ✓ | ✓ |
+| **I1** (curl script) | ✗ | ✓ | ✗ | ✓ |
 | **I2** (npm install) | ✓ | ✓ | ✓ | ✓ |
 | **I3** (npm --pin) | ✓ | ✓ | ✓ | ✓ |
 | **I4** (source link) | ✓ | ✓ | ✓ | ✓ |
 
-That's 16 combinations per platform. Each runs the same lifecycle suite.
+I1 (curl script) always runs `vault-setup.sh` with sudo, so it only pairs with binary mode (S2/S4). Users without sudo should use `openclaw plugins install` (I2) directly — documented in README.
+
+That's 14 combinations per platform. Each runs the same lifecycle suite.
 
 ### Platform matrix
 | Platform | Resolver binary works? | Notes |
