@@ -91,7 +91,20 @@ All complete in <5 seconds. We're testing that OpenClaw correctly loads the plug
 
 **Total per combo: ~40 seconds.**
 **Total per platform (14 combos): ~10 minutes.**
-**Total all platforms: ~40 minutes** (parallel in CI: ~10 minutes).
+
+### Resource-aware execution
+
+**karan-claw (dev VM): 2 vCPU, 3.8 GB RAM, no swap.**
+- **Sequential only** — one container at a time, never parallel
+- `docker run --memory=1g` — prevent OOM (leaves 2.8 GB for host + OpenClaw gateway)
+- Test one platform at a time: `run-e2e.sh --platform debian12`
+- Total for one platform: ~10 min. All 4 platforms sequential: ~40 min.
+- **Never run Docker builds on this VM** — pull pre-built images from GHCR only.
+
+**GitHub Actions CI: 4+ vCPU, 7+ GB RAM per runner.**
+- Matrix strategy = parallel: one runner per platform
+- Total wall-clock: ~10 min (all platforms in parallel)
+- This is where the full matrix runs on every PR.
 
 ---
 
