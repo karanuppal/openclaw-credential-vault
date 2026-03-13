@@ -1,0 +1,49 @@
+FROM ubuntu:24.04
+
+ARG NODE_VERSION=22
+ARG DEBIAN_FRONTEND=noninteractive
+
+# System deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    gnupg \
+    sudo \
+    git \
+    build-essential \
+    python3 \
+    perl \
+    jq \
+  && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js via NodeSource
+RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - \
+  && apt-get install -y nodejs \
+  && rm -rf /var/lib/apt/lists/*
+
+# Install OpenClaw globally
+RUN npm install -g openclaw
+
+# Create non-root test user with sudo access
+RUN useradd -m -s /bin/bash testuser \
+  && echo "testuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# Copy repo into /workspace for source-link installs
+COPY . /workspace
+RUN chown -R testuser:testuser /workspace
+
+# Copy test files
+COPY tests/e2e/ /e2e/
+RUN chown -R testuser:testuser /e2e && chmod +x /e2e/*.sh /e2e/lib/*.sh 2>/dev/null || true
+
+USER testuser
+WORKDIR /home/testuser
+
+# Set up npm global dir for non-root
+RUN mkdir -p ~/.npm-global \
+  && npm config set prefix ~/.npm-global
+ENV PATH="/home/testuser/.npm-global/bin:${PATH}"
+ENV REPO_ROOT="/workspace"
+ENV NODE_OPTIONS="--max-old-space-size=512"
+
+ENTRYPOINT ["bash"]
