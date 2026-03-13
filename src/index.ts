@@ -9,7 +9,7 @@
  * - Scrubbing (after_tool_call, tool_result_persist, before_message_write, message_sending): priority 1 — runs FIRST (scrub before other plugins)
  */
 
-import { readConfig, getVaultDir, readMeta, getOverdueCredentials } from "./config.js";
+import { readConfig, getVaultDir, getConfigPath, readMeta, getOverdueCredentials } from "./config.js";
 import { readCredentialFile, getMachinePassphrase } from "./crypto.js";
 import { resolveViaRustBinary, PROTOCOL_VERSION } from "./resolver.js";
 import type { ResolverResult } from "./resolver.js";
@@ -77,6 +77,8 @@ interface VaultState {
     command: string;
     startTime: number;
   }>;
+  /** mtime of vault config file at last load — used for hot-reload detection */
+  configMtimeMs: number;
   /** Track env vars injected into process.env for cleanup after tool call */
   injectedEnvVars: string[];
 }
@@ -90,6 +92,12 @@ function loadState(): VaultState | null {
   const vaultDir = getVaultDir();
   const config = readConfig(vaultDir);
   const meta = readMeta(vaultDir);
+  const configPath = getConfigPath(vaultDir);
+  let configMtimeMs = 0;
+  try {
+    const { statSync } = require("node:fs");
+    configMtimeMs = statSync(configPath).mtimeMs;
+  } catch { /* file may not exist yet */ }
 
   if (!meta) {
     // Vault not initialized
@@ -118,6 +126,7 @@ function loadState(): VaultState | null {
     credentialCache: new Map(),
     currentInjections: [],
     injectedEnvVars: [],
+    configMtimeMs,
   };
 }
 
@@ -348,6 +357,21 @@ async function handleBeforeToolCall(
 ): Promise<{ params?: Record<string, unknown>; block?: boolean; blockReason?: string } | void> {
   try {
   if (!state) return;
+
+  // Hot-reload: re-read config if vault.json changed on disk (e.g. after `vault add`)
+  try {
+    const { statSync } = require("node:fs");
+    const currentMtime = statSync(getConfigPath(state.vaultDir)).mtimeMs;
+    if (currentMtime > state.configMtimeMs) {
+      const newConfig = readConfig(state.vaultDir);
+      state.config = newConfig;
+      state.scrubRules = compileScrubRules(newConfig.tools);
+      state.configMtimeMs = currentMtime;
+      // Clear credential cache so new tools get decrypted fresh
+      state.credentialCache.clear();
+      console.log(`[vault] Config hot-reloaded — ${Object.keys(newConfig.tools).length} tool(s)`);
+    }
+  } catch { /* stat failure is non-fatal */ }
 
   const toolName = event.toolName;
   let params = { ...event.params };
