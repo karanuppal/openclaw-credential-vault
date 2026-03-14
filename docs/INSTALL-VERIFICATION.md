@@ -79,8 +79,14 @@ Each combo runs 5 commands inside a clean Docker container:
 5. vault remove github                           → cleanup works
 ```
 
-For S2 combos, step 4 additionally verifies:
-- "Binary resolver: OK" appears in output (Rust binary decrypted the credential)
+**Setup-conditional checks:**
+- **S2 combos:** step 4 verifies "Binary resolver: OK" in output (Rust binary decrypted the credential)
+- **S1 combos:** step 2 verifies Perl warning appears (no Perl in minimal Docker image) and recommends installing Perl or running full setup. On images with Perl pre-installed, verify no warning appears.
+
+**Perl handling by install path:**
+- **I1 (curl → setup script):** `vault-setup.sh` auto-installs Perl via the system package manager (apt/apk/yum/dnf). Verify Perl is present after install.
+- **I2+S1 (no sudo):** `vault init` warns that Perl is missing and explains the consequence (no real-time pipe scrubbing, after-call scrubber still works). Verify warning text is correct.
+- **I2+S2 (manual sudo setup):** `vault-setup.sh` auto-installs Perl. Verify Perl is present after setup.
 
 That's it. **5 commands, ~40 seconds per combo.** If these pass, the package is correctly built, all files are included, dependencies resolve, and platform-specific components work.
 

@@ -375,6 +375,26 @@ export function registerCliCommands(program: CliProgram): void {
         console.log(`✓ Vault already initialized at ${vaultDir}\n`);
       }
 
+      // Check for Perl (required for real-time stdout scrubbing)
+      const hasPerl = (() => {
+        try {
+          require("node:child_process").execFileSync("perl", ["-v"], { stdio: "ignore" });
+          return true;
+        } catch { return false; }
+      })();
+
+      if (!hasPerl) {
+        console.log("⚠ Perl is not installed.");
+        console.log("  Without Perl, credentials may briefly appear in raw subprocess output");
+        console.log("  before being scrubbed. The after-call scrubber still catches everything,");
+        console.log("  but real-time pipe scrubbing requires Perl.\n");
+        console.log("  To fix, either:");
+        console.log("    • Install Perl:  sudo apt-get install -y perl");
+        console.log("    • Run full setup (installs Perl automatically):");
+        console.log(`      sudo bash ${hasSetupScript ? setupScript : "<path-to>/vault-setup.sh"}`);
+        console.log("");
+      }
+
       if (hasSetupScript) {
         console.log("To complete setup with full security (recommended):\n");
         console.log(`  sudo bash ${setupScript}`);
