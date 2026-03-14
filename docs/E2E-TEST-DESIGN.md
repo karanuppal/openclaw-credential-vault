@@ -41,31 +41,31 @@ Same gate test, multiple OS images. Catches platform-specific issues. Runs on pu
 A real user's journey from install to daily use:
 
 1. Install the plugin (via curl script or `openclaw plugins install`)
-2. Initialize the vault
-3. Set up security (with or without binary resolver)
-4. Add credentials (auto-detect, custom, browser)
-5. Use them (list, show, test, inject, scrub)
-6. Maintain them (rotate, remove)
-7. Edge cases (errors, corruption, special chars)
+2. Initialize the vault and set up security
+3. Add credentials (auto-detect, custom, browser)
+4. Use them (list, show, test, inject, scrub)
+5. Maintain them (rotate, remove)
+6. Edge cases (errors, corruption, special chars)
 
 ### The Matrix
 
 **Install paths (2):**
-- **I1** — Curl install script (`curl -fsSL ... | sudo bash`) — the documented primary install path
-- **I2** — Plugin install command (`openclaw plugins install <tarball>`) — the standard OpenClaw plugin install path
+- **I1** — Curl install script (`curl -fsSL ... | bash`) — the documented primary install path. **Always runs `sudo bash vault-setup.sh`**, so it always produces binary resolver mode (S2).
+- **I2** — Plugin install command (`openclaw plugins install <tarball>`) — the standard OpenClaw plugin install. User manually runs `vault init` and optionally `sudo bash vault-setup.sh`.
 
 **Setup paths (2):**
 - **S1** — Machine key + inline (default: `vault init`, no sudo, no binary resolver)
 - **S2** — Machine key + binary (`vault init` + `sudo bash vault-setup.sh`, full OS-level isolation)
 
-**Valid combinations: 4 total (2 × 2)**
+**Valid combinations: 3 total**
+
+I1×S1 is invalid — the curl install script always runs sudo setup, so I1 always implies S2.
 
 | Combo | Install | Setup | What it proves |
 |-------|---------|-------|----------------|
-| 1 | I1 (curl) | S1 (inline) | Simplest user path — install + use, no sudo |
-| 2 | I1 (curl) | S2 (binary) | Full security path — install script + binary resolver |
-| 3 | I2 (plugins install) | S1 (inline) | Standard plugin install, no binary |
-| 4 | I2 (plugins install) | S2 (binary) | Standard plugin install + full security |
+| 1 | I1 (curl) | S2 (binary) | Primary user path — one-line install with full security |
+| 2 | I2 (plugins install) | S1 (inline) | Manual install, simplest setup, no sudo |
+| 3 | I2 (plugins install) | S2 (binary) | Manual install + opt-in binary resolver |
 
 Each combo runs in a separate Docker container with a clean HOME.
 
@@ -85,7 +85,7 @@ The commands a user actually types. 7 subprocess calls that prove the CLI binary
 **Phase B — Functional depth (direct module import, ~5s):**
 Import vault modules in a single Node process. Run the deeper tests (injection matching, scrubbing correctness, corruption recovery) without paying the 7s CLI startup tax repeatedly.
 
-**Per combo: ~60 seconds. All 4 combos sequential: ~4 minutes.**
+**Per combo: ~60 seconds. All 3 combos sequential: ~3 minutes.**
 
 ---
 
@@ -177,7 +177,7 @@ Rebuilt only when OpenClaw ships a new major version.
 npm run build
 npm pack                              # → openclaw-credential-vault-x.y.z.tgz
 
-COMBOS=("I1:S1" "I1:S2" "I2:S1" "I2:S2")
+COMBOS=("I1:S2" "I2:S1" "I2:S2")
 
 for combo in "${COMBOS[@]}"; do
   IFS=':' read -r install setup <<< "$combo"
@@ -198,24 +198,24 @@ done
 set -euo pipefail
 
 INSTALL_PATH="${E2E_INSTALL_PATH:-I1}"
-SETUP_PATH="${E2E_SETUP_PATH:-S1}"
+SETUP_PATH="${E2E_SETUP_PATH:-S2}"
 
 echo "=== Combo: ${INSTALL_PATH} + ${SETUP_PATH} ==="
 
 # Step 1: Install plugin
 if [[ "$INSTALL_PATH" == "I1" ]]; then
+  # Curl install script — installs plugin + runs sudo setup in one step
   bash /gate/install-curl.sh /tarball/plugin.tgz
 else
+  # Manual plugin install
   openclaw plugins install /tarball/plugin.tgz
+  openclaw vault init
+  if [[ "$SETUP_PATH" == "S2" ]]; then
+    sudo bash "$(openclaw vault setup-path)/vault-setup.sh"
+  fi
 fi
 
-# Step 2: Setup vault
-openclaw vault init
-if [[ "$SETUP_PATH" == "S2" ]]; then
-  sudo bash "$(openclaw vault setup-path)/vault-setup.sh"
-fi
-
-# Step 3: Run tests
+# Step 2: Run tests
 node /gate/phase-a-cli.mjs
 node /gate/phase-b-functional.mjs
 
@@ -229,7 +229,7 @@ echo "=== GATE PASSED: ${INSTALL_PATH} + ${SETUP_PATH} ==="
 ```
 tests/gate/
 ├── run-gate.sh               # Container entrypoint: install + setup + tests
-├── run-all.sh                # Host-side orchestrator: build, pack, run 4 combos
+├── run-all.sh                # Host-side orchestrator: build, pack, run 3 combos
 ├── install-curl.sh           # Mimics curl install script using local tarball
 ├── phase-a-cli.mjs           # 7 CLI subprocess tests (TAP output)
 ├── phase-b-functional.mjs    # 19 direct-import tests (TAP output)
@@ -263,7 +263,7 @@ jobs:
     strategy:
       matrix:
         platform: [debian12, ubuntu24, alpine]
-        combo: ["I1:S1", "I1:S2", "I2:S1", "I2:S2"]
+        combo: ["I1:S2", "I2:S1", "I2:S2"]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -288,14 +288,17 @@ The old design tested 4 install paths × 4 setup paths = 14 combinations.
 - S3 (passphrase + inline) — no real security advantage over machine key
 - S4 (passphrase + binary) — same; passphrase mode can be added later if needed
 
-**Result: 14 combos → 4 combos.** Each combo runs in ~60s. Total gate: ~4 minutes.
+**Invalid combo removed:**
+- I1×S1 — the curl install script always runs `sudo bash vault-setup.sh`, so I1 always implies S2
+
+**Result: 14 combos → 3 combos.** Each combo runs in ~60s. Total gate: ~3 minutes.
 
 ---
 
 ## Success Criteria
 
 - `npm test` — 610 unit tests pass
-- `npm run gate` — all 4 combos pass (26 tests each: 7 CLI + 19 functional)
+- `npm run gate` — all 3 combos pass (26 tests each: 7 CLI + 19 functional)
 - Both must pass before `npm publish`. Any gate failure blocks release.
 
 ---
@@ -307,4 +310,4 @@ The old design tested 4 install paths × 4 setup paths = 14 combinations.
 - `tests/e2e/run-combo.sh`
 - 4 Dockerfiles (debian12, ubuntu22, ubuntu24, alpine)
 
-All replaced by `tests/gate/` — 4 combos, ~4 minutes total, no redundancy with unit tests.
+All replaced by `tests/gate/` — 3 combos, ~3 minutes total, no redundancy with unit tests.
