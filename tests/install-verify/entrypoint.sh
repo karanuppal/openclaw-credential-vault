@@ -10,6 +10,12 @@ INSTALL_PATH="${INSTALL_PATH:-I1}"
 SETUP_PATH="${SETUP_PATH:-S2}"
 TARBALL="/tarball/plugin.tgz"
 
+# I1 (curl script) always runs sudo setup → always produces S2
+if [[ "$INSTALL_PATH" == "I1" && "$SETUP_PATH" != "S2" ]]; then
+  echo "# Note: I1 always produces S2 (curl script runs sudo setup). Overriding ${SETUP_PATH} → S2."
+  SETUP_PATH="S2"
+fi
+
 echo "TAP version 13"
 echo "# Install verification: ${INSTALL_PATH} + ${SETUP_PATH}"
 

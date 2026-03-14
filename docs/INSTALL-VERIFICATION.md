@@ -126,7 +126,9 @@ This runs:
 
 ```dockerfile
 FROM debian:12-slim
-RUN apt-get update && apt-get install -y curl sudo perl jq
+# Perl intentionally omitted — vault-setup.sh auto-installs it.
+# This lets us verify the auto-install works.
+RUN apt-get update && apt-get install -y curl sudo jq
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs
 RUN npm install -g openclaw
 ```
