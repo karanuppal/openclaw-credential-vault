@@ -10,19 +10,29 @@ Everything flows from that. Not "do the internal functions work" (610 unit tests
 
 ## Test Layers
 
-### Layer 1: Unit Tests (610 tests, ~37s, `npm test`)
+### Layer 1: Unit + Integration Tests (610 tests, ~37s, `npm test`)
 
-Already exist. Cover all internal correctness:
-- Crypto: encryption, decryption, corruption, key derivation
+Already exist. Two sub-layers:
+
+**Unit tests (437 tests, 18 files):** Pure function testing with mocks.
 - Scrubbing: patterns, false positives, literal matching, edge cases
-- Hooks: before_tool_call injection, after_tool_call scrubbing
 - Registry: auto-detection, known tools, format guessing
-- Config: read/write, upsert, remove, migration
 - Browser: cookies, passwords, domain pinning
 - Security: 54 adversarial attack scenarios
-- Sandbox, sub-agent isolation, concurrency
+- Sandbox, sub-agent isolation, performance
 
-**These do NOT spawn the `openclaw` CLI.** They import modules directly. Fast and thorough, but don't prove the assembled product works.
+**Integration tests (173 tests, 12 files):** Real filesystem, real crypto, modules wired together.
+- `e2e.test.ts` — full credential lifecycle, Phase 1→2 migration
+- `crypto.test.ts` — real AES-256-GCM encryption/decryption in temp dirs
+- `hooks.test.ts` — before_tool_call injection + after_tool_call scrubbing pipeline
+- `rotation.test.ts` — rotation with real encrypted files
+- `resolver-versioning.test.ts` — binary resolver protocol
+- `cross-compat.test.ts` — TypeScript↔Rust decryption interop
+- `config.test.ts`, `audit-log.test.ts`, `concurrent.test.ts`, etc.
+
+**What these prove:** all vault logic works correctly when modules are wired together with real files.
+
+**What these do NOT test:** the `openclaw` CLI binary, the install path, or plugin loading in the full OpenClaw runtime. That's the gate's job.
 
 ### Layer 2: Release Gate (this document, `npm run gate`)
 
@@ -82,10 +92,10 @@ The fix: **two phases inside each container.**
 **Phase A — CLI smoke tests (real subprocess calls, ~50s):**
 The commands a user actually types. 7 subprocess calls that prove the CLI binary works end-to-end.
 
-**Phase B — Functional depth (direct module import, ~5s):**
-Import vault modules in a single Node process. Run the deeper tests (injection matching, scrubbing correctness, corruption recovery) without paying the 7s CLI startup tax repeatedly.
+**Phase B — Installed-plugin verification (direct module import, ~5s):**
+Import vault modules from the **installed plugin path** (not the source tree). Verifies that the built + installed artifact works — the npm pack → install pipeline didn't break imports, paths, or dependencies.
 
-**Per combo: ~60 seconds. All 3 combos sequential: ~3 minutes.**
+**Per combo: ~55 seconds. All 3 combos sequential: ~3 minutes.**
 
 ---
 
@@ -107,39 +117,32 @@ Setup-conditional behavior:
 - **S2 (binary):** A5 additionally checks for "Binary resolver: OK" in output
 - **S1 (inline):** A5 checks for inline mode confirmation
 
-### Phase B: Functional Depth (19 tests)
+### Phase B: Installed-Plugin Verification (10 tests)
 
-Single Node process imports vault modules from the installed plugin path. Uses a temp vault dir. No subprocess overhead.
+Imports vault modules from the **installed plugin path** (not the source tree). This catches packaging issues: missing files in the tarball, broken import paths in compiled JS, missing runtime dependencies.
 
-**Credential lifecycle:**
+The existing 173 integration tests already cover functional correctness in depth. Phase B does NOT duplicate them — it runs a focused subset against the installed artifact.
+
+**Core round-trip (proves the installed build works):**
 ```
-B1.  Add + decrypt round-trip (machine key)
-B2.  Auto-detect: GitHub PAT → correct injection rules
-B3.  Auto-detect: npm token → correct injection rules
-B4.  Auto-detect: Stripe key → correct injection rules
-B5.  Custom credential → generic rules applied
-B6.  Browser cookie: store + retrieve JSON payload
-B7.  Special characters preserved exactly (p@$$w0rd!#%^&*())
-B8.  Long credential (4096 chars) round-trip
-B9.  Rotation: new value replaces old, timestamp updated
-B10. Remove: credential file deleted, config updated
-B11. Remove --purge: scrub rules also removed
+B1.  Add + decrypt round-trip (machine key) — crypto pipeline intact
+B2.  Auto-detect: GitHub PAT → correct injection rules — registry + guesser intact
+B3.  Browser cookie: store + retrieve JSON payload — browser module intact
+B4.  Rotation: new value replaces old — config read/write intact
+B5.  Remove --purge: credential + config cleaned up
 ```
 
-**Injection + scrubbing:**
+**Injection + scrubbing (proves hooks pipeline works from installed path):**
 ```
-B12. Matching command → env vars populated with credential
-B13. Non-matching command → no injection
-B14. Scrubbing: credential value replaced with [VAULT:tool]
-B15. Scrubbing: credential absent from output even in compound commands
-B16. Multi-credential: two tools injected + scrubbed in same call
+B6.  Matching command → env vars populated with credential
+B7.  Scrubbing: credential value replaced with [VAULT:tool]
+B8.  Multi-credential: two tools injected + scrubbed in same call
 ```
 
-**Error handling + resilience:**
+**Error handling (proves error paths work):**
 ```
-B17. Corrupt .enc file → clear error, other credentials unaffected
-B18. Nonexistent tool → clear error message
-B19. Rapid cycle: 5 add + 5 remove → clean state, no orphaned files
+B9.  Corrupt .enc file → clear error, other credentials unaffected
+B10. Nonexistent tool → clear error message
 ```
 
 ---
@@ -217,7 +220,7 @@ fi
 
 # Step 2: Run tests
 node /gate/phase-a-cli.mjs
-node /gate/phase-b-functional.mjs
+node /gate/phase-b-installed.mjs
 
 echo "=== GATE PASSED: ${INSTALL_PATH} + ${SETUP_PATH} ==="
 ```
@@ -232,7 +235,7 @@ tests/gate/
 ├── run-all.sh                # Host-side orchestrator: build, pack, run 3 combos
 ├── install-curl.sh           # Mimics curl install script using local tarball
 ├── phase-a-cli.mjs           # 7 CLI subprocess tests (TAP output)
-├── phase-b-functional.mjs    # 19 direct-import tests (TAP output)
+├── phase-b-installed.mjs     # 10 installed-plugin verification tests (TAP output)
 ├── Dockerfile.debian12       # Base image
 └── README.md                 # How to run, what to do if it fails
 ```
@@ -298,7 +301,7 @@ The old design tested 4 install paths × 4 setup paths = 14 combinations.
 ## Success Criteria
 
 - `npm test` — 610 unit tests pass
-- `npm run gate` — all 3 combos pass (26 tests each: 7 CLI + 19 functional)
+- `npm run gate` — all 3 combos pass (17 tests each: 7 CLI + 10 installed-plugin verification)
 - Both must pass before `npm publish`. Any gate failure blocks release.
 
 ---
