@@ -18,6 +18,13 @@ echo "======================================"
 echo ""
 
 # ── Check prerequisites ──
+if ! command -v perl &>/dev/null; then
+  echo "⚠ Warning: Perl is not installed."
+  echo "  Perl is required for real-time credential scrubbing."
+  echo "  It will be installed automatically during setup (next step)."
+  echo ""
+fi
+
 if ! command -v openclaw &>/dev/null; then
   echo "Error: openclaw is not installed."
   echo "Install it first: curl -fsSL https://openclaw.ai/install.sh | bash"
@@ -25,8 +32,10 @@ if ! command -v openclaw &>/dev/null; then
 fi
 
 # ── Step 1: Install the plugin ──
+# Accept optional local tarball path for testing (e.g., install.sh /path/to/plugin.tgz)
+PACKAGE="${1:-openclaw-credential-vault}"
 echo "Installing plugin..."
-openclaw plugins install openclaw-credential-vault
+openclaw plugins install "$PACKAGE"
 
 # ── Step 2: Find the setup script ──
 # The plugin is installed somewhere under the openclaw state dir.
@@ -34,11 +43,14 @@ openclaw plugins install openclaw-credential-vault
 OPENCLAW_DIR="${OPENCLAW_STATE_DIR:-$HOME/.openclaw}"
 SETUP_SCRIPT=""
 
-# Search in plugins directory (standard install location)
+# Search in plugins and extensions directories
 for candidate in \
   "$OPENCLAW_DIR/plugins/credential-vault/bin/vault-setup.sh" \
   "$OPENCLAW_DIR/plugins/openclaw-credential-vault/bin/vault-setup.sh" \
-  "$OPENCLAW_DIR/plugins/"*/bin/vault-setup.sh; do
+  "$OPENCLAW_DIR/plugins/"*/bin/vault-setup.sh \
+  "$OPENCLAW_DIR/extensions/credential-vault/bin/vault-setup.sh" \
+  "$OPENCLAW_DIR/extensions/openclaw-credential-vault/bin/vault-setup.sh" \
+  "$OPENCLAW_DIR/extensions/"*/bin/vault-setup.sh; do
   if [ -f "$candidate" ]; then
     SETUP_SCRIPT="$candidate"
     break

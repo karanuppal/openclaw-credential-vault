@@ -69,6 +69,47 @@ Before injecting, scan the command string for URLs and hostnames. If any URL doe
 
 ---
 
+### 2. Session-Aware Credential Routing
+
+**Problem:** When multiple credentials exist for the same service (e.g., `github` for a bot account and `github-karan` for the owner's personal account), the vault has no way to select which one to inject based on the current session or topic. All injection is purely pattern-based (`commandMatch`).
+
+**Use case:** In a Telegram forum group with multiple topics, the user wants:
+- Topic "OpenClaw Contributor" → inject `github-karan` (personal PAT) for `gh *` commands
+- All other topics → inject `github` (bot token) for `gh *` commands
+
+**Proposed design:** Add optional `sessionMatch` and `topicMatch` fields to injection rules in `tools.yaml`:
+```yaml
+github-karan:
+  injection:
+    type: exec-env
+    envVar: GH_TOKEN
+    commandMatch: "gh *|git *"
+    sessionMatch: "topic:449"  # matches session key containing this substring
+    priority: 10               # higher priority = preferred when both match
+
+github:
+  injection:
+    type: exec-env
+    envVar: GH_TOKEN
+    commandMatch: "gh *|git *"
+    # no sessionMatch = fallback default
+    priority: 1
+```
+
+**How it works:**
+- `before_tool_call` hook already receives session context (channelId, and after PR #33914, groupId)
+- When multiple credentials match the same `commandMatch`, the vault selects by:
+  1. Filter by `sessionMatch` / `topicMatch` if present
+  2. Among remaining matches, pick highest `priority`
+  3. If tied, pick the most specific `sessionMatch`
+- Credentials with no `sessionMatch` act as fallbacks
+
+**Implementation:** ~50-100 lines in the matching logic. The hook context already has the session information; we just need to thread it into `findMatchingRules()`.
+
+**Why this matters:** This is something native OpenClaw Secrets fundamentally cannot do — it resolves credentials at startup, not at tool-call time. Per-session credential routing requires hook-time decision-making, which is the vault's core architecture.
+
+---
+
 ## UX Improvements
 
 ### 1. Fuzzy match on tool name not found
@@ -122,3 +163,37 @@ Tool "gumroad-password" not found. Similar tools in vault:
 ---
 
 *More items will be added as testing continues.*
+
+### Install Verification Runtime Optimization (Option 1)
+
+**Current state:** On karan-claw (3.8GB RAM, no swap by default), `openclaw plugins install` in Docker can get OOM-killed during plugin dependency install.
+
+**Current mitigation (Option 2):** pre-install heavy deps in the base image and enable swap on host.
+
+**Future plan (Option 1, when host resources are increased):**
+- Increase Docker memory allocation / host RAM (or add permanent swap)
+- Remove dependency pre-install workaround from Dockerfiles
+- Let install verification run against a leaner, closer-to-user base image
+
+This keeps install verification realistic while reducing environment-specific workarounds.
+
+### Replace Perl Stdout Scrubber with Node.js
+
+**Problem:** The real-time pipe scrubber uses `perl -pe` to regex-replace credentials in subprocess stdout. Perl is pre-installed on most Linux distros and macOS but missing on Alpine by default. This is an external dependency we don't control.
+
+**Proposed solution:** Ship a small Node.js script (`vault-scrub.mjs`) with the plugin that does the same pipe substitution. Node is already a hard dependency, so this eliminates the Perl requirement entirely.
+
+```javascript
+// vault-scrub.mjs
+import { createInterface } from "readline";
+const pairs = JSON.parse(process.argv[1]);
+const rl = createInterface({ input: process.stdin });
+rl.on("line", (l) => {
+  for (const [k, v] of pairs) l = l.replaceAll(k, v);
+  process.stdout.write(l + "\n");
+});
+```
+
+**Tradeoff:** Node process startup (~50ms) vs Perl startup (~5ms). Acceptable since the scrubber runs once per exec call, and the subprocess itself takes much longer.
+
+**Current mitigation:** `vault-setup.sh` auto-installs Perl on Debian/Ubuntu/Alpine/RHEL. The `install.sh` script warns if Perl is missing.
