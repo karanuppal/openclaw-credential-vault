@@ -32,8 +32,10 @@ if ! command -v openclaw &>/dev/null; then
 fi
 
 # ── Step 1: Install the plugin ──
+# Accept optional local tarball path for testing (e.g., install.sh /path/to/plugin.tgz)
+PACKAGE="${1:-openclaw-credential-vault}"
 echo "Installing plugin..."
-openclaw plugins install openclaw-credential-vault
+openclaw plugins install "$PACKAGE"
 
 # ── Step 2: Find the setup script ──
 # The plugin is installed somewhere under the openclaw state dir.

@@ -79,6 +79,7 @@ run_combo() {
 
   docker run --rm \
     -v "${TARBALL_PATH}:/tarball/plugin.tgz:ro" \
+    -v "${PROJECT_DIR}/install.sh:/verify/install.sh:ro" \
     -e "INSTALL_PATH=${install_path}" \
     -e "SETUP_PATH=${setup_path}" \
     "$IMAGE_NAME"

@@ -21,6 +21,6 @@ USER testuser
 WORKDIR /home/testuser
 
 COPY entrypoint.sh /verify/entrypoint.sh
-COPY install-curl.sh /verify/install-curl.sh
+# install.sh is mounted at runtime from the project root via -v
 
 ENTRYPOINT ["bash", "/verify/entrypoint.sh"]

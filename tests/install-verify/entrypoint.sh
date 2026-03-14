@@ -45,14 +45,14 @@ tap_fail() {
 echo "# Step 1: Install (${INSTALL_PATH})"
 
 if [[ "$INSTALL_PATH" == "I1" ]]; then
-  # I1: curl install script — does BOTH plugin install AND sudo setup in one step
-  INSTALL_OUTPUT=$(bash /verify/install-curl.sh "$TARBALL" 2>&1) || {
-    tap_fail "I1 curl install script" "$INSTALL_OUTPUT"
+  # I1: real install.sh with local tarball argument — does plugin install + sudo setup
+  INSTALL_OUTPUT=$(bash /verify/install.sh "$TARBALL" 2>&1) || {
+    tap_fail "I1 install.sh" "$INSTALL_OUTPUT"
     echo "1..${TESTS}"
     echo "# Failed ${FAIL}/${TESTS}"
     exit 1
   }
-  tap_ok "I1 curl install script succeeded"
+  tap_ok "I1 install.sh succeeded"
 
   # I1 always produces S2 (binary resolver) — verify Perl was installed by setup script
   if command -v perl &>/dev/null; then

@@ -148,7 +148,7 @@ echo "=== Install verification: ${INSTALL_PATH} + ${SETUP_PATH} ==="
 
 # Install
 if [[ "$INSTALL_PATH" == "I1" ]]; then
-  bash /verify/install-curl.sh /tarball/plugin.tgz
+  bash /verify/install.sh /tarball/plugin.tgz
 else
   openclaw plugins install /tarball/plugin.tgz
 fi
@@ -214,11 +214,13 @@ jobs:
 tests/install-verify/
 ├── run.sh                    # Host-side: build, pack, run combos
 ├── entrypoint.sh             # Container-side: install + setup + verify
-├── install-curl.sh           # Simulates curl install using local tarball
 ├── Dockerfile.debian12       # Base image
 ├── Dockerfile.ubuntu24       # Base image
 ├── Dockerfile.alpine         # Base image
 └── README.md                 # How to run, what to do if it fails
+
+# The real install.sh (project root) is mounted into the container at runtime.
+# No test-only install script — we test the actual install script.
 ```
 
 ---
