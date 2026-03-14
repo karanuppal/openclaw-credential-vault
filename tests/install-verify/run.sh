@@ -43,11 +43,11 @@ npm run build
 # ── Step 2: Pack ──
 echo ""
 echo "=== Step 2: npm pack ==="
-TARBALL_NAME=$(npm pack --pack-destination /tmp 2>&1 | tail -1)
+TARBALL_NAME=$(npm pack --pack-destination /tmp --json 2>/dev/null | jq -r '.[0].filename')
 TARBALL_PATH="/tmp/${TARBALL_NAME}"
 echo "Tarball: $TARBALL_PATH"
 
-if [ ! -f "$TARBALL_PATH" ]; then
+if [ -z "$TARBALL_NAME" ] || [ ! -f "$TARBALL_PATH" ]; then
   echo "Error: npm pack did not create expected tarball at $TARBALL_PATH"
   exit 1
 fi
