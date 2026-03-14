@@ -164,6 +164,19 @@ Tool "gumroad-password" not found. Similar tools in vault:
 
 *More items will be added as testing continues.*
 
+### Install Verification Runtime Optimization (Option 1)
+
+**Current state:** On karan-claw (3.8GB RAM, no swap by default), `openclaw plugins install` in Docker can get OOM-killed during plugin dependency install.
+
+**Current mitigation (Option 2):** pre-install heavy deps in the base image and enable swap on host.
+
+**Future plan (Option 1, when host resources are increased):**
+- Increase Docker memory allocation / host RAM (or add permanent swap)
+- Remove dependency pre-install workaround from Dockerfiles
+- Let install verification run against a leaner, closer-to-user base image
+
+This keeps install verification realistic while reducing environment-specific workarounds.
+
 ### Replace Perl Stdout Scrubber with Node.js
 
 **Problem:** The real-time pipe scrubber uses `perl -pe` to regex-replace credentials in subprocess stdout. Perl is pre-installed on most Linux distros and macOS but missing on Alpine by default. This is an external dependency we don't control.

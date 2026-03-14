@@ -3,8 +3,9 @@
 FROM alpine:3.20
 
 RUN apk add --no-cache \
-      curl sudo bash ca-certificates jq nodejs npm \
-    && npm install -g openclaw
+      curl sudo bash ca-certificates jq git nodejs npm \
+    && npm install -g openclaw \
+    && npm install -g argon2
 
 # Create a non-root user for realistic install testing
 # Alpine uses adduser, not useradd

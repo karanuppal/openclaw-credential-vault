@@ -83,7 +83,7 @@ Tests produce [TAP](https://testanything.org/) (Test Anything Protocol) output f
 
 - `run.sh` — Host-side orchestrator (build, pack, docker run)
 - `entrypoint.sh` — Container-side test runner
-- `install-curl.sh` — Simulates curl install using local tarball
+- `install.sh` (project root, mounted at runtime) — Real install script, accepts optional local tarball arg
 - `Dockerfile.debian12` — Debian 12 base image (local + CI)
 - `Dockerfile.ubuntu24` — Ubuntu 24.04 base image (CI only)
 - `Dockerfile.alpine` — Alpine base image (CI only)

@@ -49,6 +49,11 @@
   "peerDependencies": {
     "openclaw": ">=2026.3.0"
   },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "typescript": "^5.7.0",
     "vitest": "^3.0.0",

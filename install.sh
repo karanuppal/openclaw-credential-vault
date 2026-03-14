@@ -43,11 +43,14 @@ openclaw plugins install "$PACKAGE"
 OPENCLAW_DIR="${OPENCLAW_STATE_DIR:-$HOME/.openclaw}"
 SETUP_SCRIPT=""
 
-# Search in plugins directory (standard install location)
+# Search in plugins and extensions directories
 for candidate in \
   "$OPENCLAW_DIR/plugins/credential-vault/bin/vault-setup.sh" \
   "$OPENCLAW_DIR/plugins/openclaw-credential-vault/bin/vault-setup.sh" \
-  "$OPENCLAW_DIR/plugins/"*/bin/vault-setup.sh; do
+  "$OPENCLAW_DIR/plugins/"*/bin/vault-setup.sh \
+  "$OPENCLAW_DIR/extensions/credential-vault/bin/vault-setup.sh" \
+  "$OPENCLAW_DIR/extensions/openclaw-credential-vault/bin/vault-setup.sh" \
+  "$OPENCLAW_DIR/extensions/"*/bin/vault-setup.sh; do
   if [ -f "$candidate" ]; then
     SETUP_SCRIPT="$candidate"
     break
