@@ -23,6 +23,7 @@
     "test:watch": "vitest",
     "test:resolver": "cd resolver && cargo test",
     "test:cross": "vitest run tests/cross-compat.test.ts",
+    "verify-install": "bash tests/install-verify/run.sh",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run build"
   },

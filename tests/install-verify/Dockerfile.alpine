@@ -1,0 +1,22 @@
+# Install verification base image — Alpine
+# Contains Node 22 + OpenClaw. Does NOT include the vault plugin.
+FROM alpine:3.20
+
+RUN apk add --no-cache \
+      curl sudo bash ca-certificates jq nodejs npm \
+    && npm install -g openclaw
+
+# Create a non-root user for realistic install testing
+# Alpine uses adduser, not useradd
+RUN adduser -D -s /bin/bash testuser \
+    && echo "testuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# Perl intentionally NOT installed — setup script should auto-install it.
+
+USER testuser
+WORKDIR /home/testuser
+
+COPY entrypoint.sh /verify/entrypoint.sh
+COPY install-curl.sh /verify/install-curl.sh
+
+ENTRYPOINT ["bash", "/verify/entrypoint.sh"]

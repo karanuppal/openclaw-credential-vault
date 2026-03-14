@@ -1,0 +1,24 @@
+# Install verification base image — Ubuntu 24.04
+# Contains Node 22 + OpenClaw. Does NOT include the vault plugin.
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      curl sudo ca-certificates gnupg jq \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && npm install -g openclaw \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Create a non-root user for realistic install testing
+RUN useradd -m -s /bin/bash testuser \
+    && echo "testuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# Perl intentionally NOT installed — setup script should auto-install it.
+
+USER testuser
+WORKDIR /home/testuser
+
+COPY entrypoint.sh /verify/entrypoint.sh
+COPY install-curl.sh /verify/install-curl.sh
+
+ENTRYPOINT ["bash", "/verify/entrypoint.sh"]
