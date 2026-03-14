@@ -67,6 +67,44 @@ jobs:
         working-directory: resolver
         run: cargo build --release --target x86_64-unknown-linux-musl
 
+  install-verify:
+    name: Install Verification (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    needs: [test-typescript, test-resolver]
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [debian12, ubuntu24, alpine]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Pack tarball
+        run: npm pack --pack-destination /tmp/
+
+      - name: Build Docker image (${{ matrix.platform }})
+        run: |
+          docker build \
+            -f tests/install-verify/Dockerfile.${{ matrix.platform }} \
+            -t vault-verify-${{ matrix.platform }} \
+            tests/install-verify/
+
+      - name: Run install verification (${{ matrix.platform }})
+        run: |
+          TARBALL=$(ls /tmp/openclaw-credential-vault-*.tgz | tail -1)
+          bash tests/install-verify/run.sh --platform ${{ matrix.platform }}
+
   test-cross-compat:
     name: Cross-Language Compatibility
     runs-on: ubuntu-latest
