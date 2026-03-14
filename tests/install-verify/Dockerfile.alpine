@@ -4,7 +4,10 @@ FROM alpine:3.20
 
 RUN apk add --no-cache \
       curl sudo bash ca-certificates jq git nodejs npm \
-    && npm install -g openclaw
+    && npm install -g openclaw \
+    && ln -sf $(npm prefix -g)/bin/openclaw /usr/local/bin/openclaw
+
+ENV PATH="/usr/local/bin:$PATH"
 
 # Create a non-root user for realistic install testing
 # Alpine uses adduser, not useradd
