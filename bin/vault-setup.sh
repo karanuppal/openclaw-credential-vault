@@ -77,6 +77,26 @@ if [ -z "$SOURCE_BINARY" ]; then
   exit 1
 fi
 
+# ── Step 0: Ensure Perl is installed (required for stdout scrubbing) ──
+if ! command -v perl &>/dev/null; then
+  echo "Installing Perl (required for credential scrubbing)..."
+  if command -v apt-get &>/dev/null; then
+    apt-get update -qq && apt-get install -y -qq perl >/dev/null
+  elif command -v apk &>/dev/null; then
+    apk add --quiet perl
+  elif command -v yum &>/dev/null; then
+    yum install -y -q perl
+  elif command -v dnf &>/dev/null; then
+    dnf install -y -q perl
+  else
+    echo "⚠ Warning: Could not install Perl automatically."
+    echo "  Please install Perl manually — it's required for real-time credential scrubbing."
+  fi
+  if command -v perl &>/dev/null; then
+    echo "✓ Perl installed"
+  fi
+fi
+
 echo "OpenClaw Credential Vault — OS-Level Isolation Setup"
 echo "===================================================="
 echo ""

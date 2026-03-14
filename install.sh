@@ -18,6 +18,13 @@ echo "======================================"
 echo ""
 
 # ── Check prerequisites ──
+if ! command -v perl &>/dev/null; then
+  echo "⚠ Warning: Perl is not installed."
+  echo "  Perl is required for real-time credential scrubbing."
+  echo "  It will be installed automatically during setup (next step)."
+  echo ""
+fi
+
 if ! command -v openclaw &>/dev/null; then
   echo "Error: openclaw is not installed."
   echo "Install it first: curl -fsSL https://openclaw.ai/install.sh | bash"
