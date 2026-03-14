@@ -76,7 +76,7 @@ Each combo runs 5 commands inside a clean Docker container:
 2. vault init                                    → vault directory created, config written
 3. vault add github --key ghp_FAKE... --yes      → credential encrypted + stored, auto-detect works
 4. vault test github                             → decryption works, injection rules correct
-5. vault remove github                           → cleanup works
+5. vault remove github --purge                   → credential + config + scrub rules fully cleaned up
 ```
 
 **Setup-conditional checks:**
@@ -116,9 +116,11 @@ npm run verify-install
 ```
 
 This runs:
-1. `npm run build` — compile TypeScript
-2. `npm pack` — create tarball (same artifact that goes to npm)
-3. Run 3 combos on Debian 12 sequentially (~2 minutes)
+1. `npm run build` — compile TypeScript (~5s)
+2. `npm pack` — create tarball, same artifact that goes to npm (~2s)
+3. Run 3 combos on Debian 12 sequentially (~2 min)
+
+**Total: ~2.5 minutes.**
 
 ### Base image (built once)
 
