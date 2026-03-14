@@ -2,12 +2,12 @@
 # Contains Node 22 + OpenClaw. Does NOT include the vault plugin.
 FROM alpine:3.20
 
+# Alpine 3.20 ships Node 20 via apk, but openclaw requires Node >= 22.
+# Install Node 22 from the unofficial NodeSource Alpine builds.
 RUN apk add --no-cache \
-      curl sudo bash ca-certificates jq git nodejs npm \
-    && npm install -g openclaw \
-    && ln -sf $(npm prefix -g)/bin/openclaw /usr/local/bin/openclaw
-
-ENV PATH="/usr/local/bin:$PATH"
+      curl sudo bash ca-certificates jq git \
+    && apk add --no-cache --repository=https://dl-cdn.alpinelinux.org/alpine/v3.21/main nodejs npm \
+    && npm install -g --ignore-scripts openclaw
 
 # Create a non-root user for realistic install testing
 # Alpine uses adduser, not useradd

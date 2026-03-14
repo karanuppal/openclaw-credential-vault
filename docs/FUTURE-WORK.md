@@ -164,6 +164,12 @@ Tool "gumroad-password" not found. Similar tools in vault:
 
 *More items will be added as testing continues.*
 
+### Alpine Install Verification
+
+Alpine is excluded from install verification because openclaw itself doesn't install cleanly on Alpine — `node-llama-cpp` postinstall requires cmake/xpm which aren't available, and `--ignore-scripts` breaks `openclaw plugins install` (needs python3 subprocess). The vault plugin itself is platform-independent (pure JS + prebuilt argon2 binaries for musl), so this only blocks testing the binary resolver on Alpine.
+
+**Unblock when:** openclaw publishes Alpine-compatible builds or provides a `--no-llama` install flag.
+
 ### Install Verification Runtime Optimization (Option 1)
 
 **Current state:** On karan-claw (3.8GB RAM, no swap by default), `openclaw plugins install` in Docker can get OOM-killed during plugin dependency install.
