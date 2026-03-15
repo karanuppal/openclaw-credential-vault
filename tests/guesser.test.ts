@@ -349,4 +349,98 @@ describe("buildToolConfigFromGuess", () => {
     expect(execRule).toBeDefined();
     expect(execRule!.commandMatch).toContain("acme");
   });
+
+  // ─── Regression: password/unknown with overrides must create exec rules ───
+
+  it("creates exec rule from envVarName override when suggestedInject is empty (password)", () => {
+    const guess = guessCredentialFormat("myP@ssw0rd!", "gumroad");
+    // Password format returns empty suggestedInject
+    expect(guess.suggestedInject).toEqual([]);
+
+    const config = buildToolConfigFromGuess("gumroad", guess, {
+      envVarName: "GUMROAD_TOKEN",
+      commandMatch: "*gumroad*",
+    });
+
+    // Must create an exec rule — not silently drop the overrides
+    const execRule = config.inject.find((r) => r.tool === "exec");
+    expect(execRule).toBeDefined();
+    expect(execRule!.env).toHaveProperty("GUMROAD_TOKEN");
+    expect(execRule!.env!["GUMROAD_TOKEN"]).toBe("$vault:gumroad");
+    expect(execRule!.commandMatch).toBe("*gumroad*");
+  });
+
+  it("creates exec rule from envVarName override with default commandMatch when only envVarName provided", () => {
+    const guess = guessCredentialFormat("short-pwd", "myservice");
+    expect(guess.suggestedInject).toEqual([]);
+
+    const config = buildToolConfigFromGuess("myservice", guess, {
+      envVarName: "MYSERVICE_KEY",
+    });
+
+    const execRule = config.inject.find((r) => r.tool === "exec");
+    expect(execRule).toBeDefined();
+    expect(execRule!.env).toHaveProperty("MYSERVICE_KEY");
+    expect(execRule!.commandMatch).toBe("myservice*");
+  });
+
+  it("creates exec rule from commandMatch override when only commandMatch provided", () => {
+    const guess = guessCredentialFormat("another-pwd", "deploy-tool");
+    expect(guess.suggestedInject).toEqual([]);
+
+    const config = buildToolConfigFromGuess("deploy-tool", guess, {
+      commandMatch: "deploy*|dtool*",
+    });
+
+    const execRule = config.inject.find((r) => r.tool === "exec");
+    expect(execRule).toBeDefined();
+    expect(execRule!.commandMatch).toBe("deploy*|dtool*");
+    expect(execRule!.env).toHaveProperty("DEPLOY_TOOL_KEY");
+    expect(execRule!.env!["DEPLOY_TOOL_KEY"]).toBe("$vault:deploy-tool");
+  });
+
+  it("creates exec rule for unknown/password format with overrides", () => {
+    // Short credential — triggers "password" format (empty suggestedInject)
+    const guess = guessCredentialFormat("x", "mystery");
+    expect(guess.suggestedInject).toEqual([]);
+
+    const config = buildToolConfigFromGuess("mystery", guess, {
+      envVarName: "MYSTERY_TOKEN",
+      commandMatch: "*mystery*",
+    });
+
+    const execRule = config.inject.find((r) => r.tool === "exec");
+    expect(execRule).toBeDefined();
+    expect(execRule!.env!["MYSTERY_TOKEN"]).toBe("$vault:mystery");
+    expect(execRule!.commandMatch).toBe("*mystery*");
+  });
+
+  it("does not double-create exec rule when envVarName and commandMatch both provided", () => {
+    const guess = guessCredentialFormat("p@ss123!", "svc");
+    const config = buildToolConfigFromGuess("svc", guess, {
+      envVarName: "SVC_PASS",
+      commandMatch: "svc-cli*",
+    });
+
+    const execRules = config.inject.filter((r) => r.tool === "exec");
+    expect(execRules).toHaveLength(1);
+    expect(execRules[0].env!["SVC_PASS"]).toBe("$vault:svc");
+    expect(execRules[0].commandMatch).toBe("svc-cli*");
+  });
+
+  it("still modifies existing exec rule when suggestedInject is not empty", () => {
+    // Generic API key has a suggested exec rule — overrides should modify, not create new
+    const guess = guessCredentialFormat("a".repeat(40), "acme");
+    expect(guess.suggestedInject.length).toBeGreaterThan(0);
+
+    const config = buildToolConfigFromGuess("acme", guess, {
+      envVarName: "ACME_SECRET",
+      commandMatch: "acme-tool*",
+    });
+
+    const execRules = config.inject.filter((r) => r.tool === "exec");
+    expect(execRules).toHaveLength(1);
+    expect(execRules[0].env).toHaveProperty("ACME_SECRET");
+    expect(execRules[0].commandMatch).toBe("acme-tool*");
+  });
 });

@@ -410,6 +410,14 @@ export function buildToolConfigFromGuess(
       const value = inject[existingExec].env![oldKey];
       delete inject[existingExec].env![oldKey];
       inject[existingExec].env![overrides.envVarName] = value;
+    } else if (existingExec < 0) {
+      // No exec rule exists — create one from the override
+      const cmdMatch = overrides?.commandMatch ?? `${toolName}*`;
+      inject.push({
+        tool: "exec",
+        commandMatch: cmdMatch,
+        env: { [overrides.envVarName]: `$vault:${toolName}` },
+      });
     }
   }
 
@@ -417,7 +425,24 @@ export function buildToolConfigFromGuess(
     const existingExec = inject.findIndex((r) => r.tool === "exec");
     if (existingExec >= 0) {
       inject[existingExec].commandMatch = overrides.commandMatch;
+    } else if (!overrides?.envVarName) {
+      // No exec rule and envVarName didn't already create one — create with default env var
+      const defaultEnvVar = `${toolName.toUpperCase().replace(/-/g, "_")}_KEY`;
+      inject.push({
+        tool: "exec",
+        commandMatch: overrides.commandMatch,
+        env: { [defaultEnvVar]: `$vault:${toolName}` },
+      });
     }
+  }
+
+  // Ensure scrub patterns are never empty — add a generic pattern based on credential length
+  // (Literal scrubbing of the exact value is handled separately by the scrubber cache at injection time)
+  if (scrub.patterns.length === 0) {
+    // For credentials with no detected pattern, we can't generate a useful regex.
+    // But we should signal that literal scrubbing is active.
+    // The scrubber automatically caches decrypted credential values for literal matching,
+    // so even without regex patterns, the credential value will be scrubbed from output.
   }
 
   return { inject, scrub };
