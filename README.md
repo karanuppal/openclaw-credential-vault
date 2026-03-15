@@ -2,13 +2,21 @@
 
 Encrypted credential management for [OpenClaw](https://openclaw.ai). Keeps API keys, tokens, and passwords out of the AI agent's context window — where they could be exfiltrated, leaked into transcripts, or exposed through tool output.
 
+## What You Get
+
+- **Your credentials never enter the AI's context.** They're decrypted, injected into a short-lived subprocess, and scrubbed from output before the agent sees it.
+- **Encryption at rest.** Each credential is individually encrypted with AES-256-GCM. Even if someone reads your vault directory, they get ciphertext.
+- **OS-level isolation.** A dedicated system user owns the credential files. The agent process can't read them — decryption happens in a separate, sandboxed Rust binary.
+- **Automatic output scrubbing.** Credentials are caught and redacted in tool output, outbound messages, and session transcripts through multiple independent layers.
+- **Thoroughly tested.** 610 tests across 30 files covering crypto, injection, scrubbing, adversarial attacks, false positives, and clean-machine install verification.
+
 ## Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/karanuppal/openclaw-credential-vault/main/install.sh | bash
 ```
 
-This installs the plugin, creates a dedicated system user for credential isolation, and configures everything. You'll be prompted for sudo.
+This installs the plugin, creates the dedicated system user, and configures file permissions. You'll be prompted for sudo.
 
 **Can't use sudo?** Run `openclaw vault init` for inline-only mode — credentials are still encrypted at rest, just without OS-level user separation.
 
@@ -23,72 +31,67 @@ openclaw vault test github
 
 # Add more
 openclaw vault add stripe --key "sk_live_..."
-openclaw vault add amazon --type browser-password --domain .amazon.com --key "p@ssw0rd"
 ```
 
-That's it. The agent can now use `gh`, call Stripe APIs, and log into Amazon — without ever seeing the credentials.
+That's it. The agent can now use `gh` and call Stripe APIs without ever seeing the credentials.
 
 ## How It Works
 
 ```
 Agent runs "gh pr list"
     ↓
-before_tool_call hook matches "gh" → decrypts credential → injects GH_TOKEN into subprocess
+Vault matches "gh" → decrypts credential → injects into subprocess environment
     ↓
-gh runs with the token, returns PR listings
+gh runs with the token, returns results
     ↓
 Subprocess exits — credential dies with it
     ↓
-Output scrubbed for credential patterns (3 layers: regex + literal + env-var)
+Output scrubbed for credential patterns before the agent sees it
     ↓
-Agent sees clean PR listings — no credential anywhere in context
+Agent gets clean PR listings — no credential anywhere in context
 ```
 
-**Encryption:** AES-256-GCM with Argon2id key derivation (64 MiB memory, 3 iterations). Each credential is a separate `.enc` file.
+After adding a credential, changes take effect immediately — no gateway restart needed.
 
-**Isolation:** The Rust resolver binary runs as a dedicated `openclaw-vault` system user via setuid. The agent process can't read the credential files — it gets "Permission denied." The plugin and resolver use protocol versioning to detect mismatches after updates — if `npm update` delivers a new version, the plugin surfaces actionable fix instructions (`sudo bash vault-setup.sh`) until the installed binary is updated.
-
-**Scrubbing:** Three redundant layers catch credentials in tool output, file writes, outbound messages, and session transcripts. Patterns for GitHub, Stripe, Gumroad, OpenAI, and Anthropic tokens ship built-in.
+If the plugin and resolver binary get out of sync after an update, you'll get a clear warning with the exact command to fix it.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `vault init` | Initialize vault (creates directory, shows setup instructions) |
-| `vault add <tool> --key <cred>` | Add a credential (auto-detects format) |
+| `vault init` | Initialize vault |
+| `vault add <tool> --key <cred>` | Add a credential (auto-detects format, configures injection + scrubbing) |
 | `vault add <tool> --type browser-password --domain <d> --key <p>` | Add a domain-pinned browser password |
 | `vault add <tool> --type browser-cookie --domain <d>` | Add browser cookies (paste JSON or Netscape format) |
 | `vault list` | Show all stored credentials and status |
-| `vault show <tool>` | Show credential details and config |
-| `vault test <tool>` | Verify injection and scrubbing work |
+| `vault show <tool>` | Show credential details and injection config |
+| `vault test <tool>` | Verify injection and scrubbing work end-to-end |
 | `vault rotate <tool> --key <new>` | Rotate a credential |
-| `vault rotate --check` | Show overdue rotations |
-| `vault rotate --all` | Emergency mass rotation walkthrough |
-| `vault remove <tool>` | Remove credential (keeps scrub patterns) |
-| `vault remove <tool> --purge` | Fully remove credential + config |
-| `vault audit` | Security audit (permissions, rotation, config) |
-| `vault logs` | View audit log (credential access + scrubbing) |
-| `vault logs --stats` | Aggregate access/scrub statistics |
-| `vault logs --tool <name> --last <duration>` | Filter by tool and time |
-| `vault logs --json` | Raw JSONL output |
+| `vault rotate --check` | Show credentials overdue for rotation |
+| `vault rotate --all` | Interactive mass rotation walkthrough |
+| `vault remove <tool>` | Remove credential (keeps scrub patterns as safety net) |
+| `vault remove <tool> --purge` | Fully remove credential + all config |
+| `vault audit` | Security audit (permissions, rotation, resolver status) |
+| `vault logs` | View audit log (`--tool`, `--type`, `--last`, `--stats`, `--json`) |
 
 ## Platform Support
 
 | Platform | Status |
 |----------|--------|
-| Linux x64 | Full support (inline + resolver) |
-| Linux arm64 | Inline mode only (resolver binary coming soon) |
+| Debian 12+ / Ubuntu 22.04+ (x64) | ✅ Full support (inline + binary resolver) |
+| Other Linux x64 | Should work — untested |
+| Linux arm64 | Inline mode only |
 | macOS | Inline mode only |
+| Alpine Linux | Not supported |
 
-**Sandbox mode:** Not yet tested with OpenClaw's Docker sandbox. The vault hooks run in the gateway process (not inside the sandbox container), so they should work in theory, but no end-to-end verification has been done. See [Specification](docs/SPEC.md#sandbox-compatibility) for details.
+## Documentation
 
-## Learn More
-
-- **[Architecture](docs/ARCHITECTURE.md)** — Component map, Mermaid diagrams, hook pipeline, Rust resolver deep dive
-- **[Threat Model](docs/THREAT-MODEL.md)** — What we defend against, what we don't, and design trade-offs
+- **[Architecture](docs/ARCHITECTURE.md)** — Component map, hook pipeline, Rust resolver deep dive
 - **[Specification](docs/SPEC.md)** — Encryption scheme, hook behavior, CLI reference, config schemas
-- **[Testing](docs/TESTING.md)** — 576 tests across 29 files: unit, integration, adversarial, performance, resolver versioning
-- **[Security Audit](docs/SECURITY-AUDIT.md)** — Validation methodology, results, bugs found and fixed
+- **[Threat Model](docs/THREAT-MODEL.md)** — What we defend against, what we don't, and design trade-offs
+- **[Testing](docs/TESTING.md)** — 610 tests: unit, integration, adversarial, performance, install verification
+- **[Security Audit](docs/SECURITY-AUDIT.md)** — Validation methodology, results, findings
+- **[Install Verification](docs/INSTALL-VERIFICATION.md)** — Clean-machine Docker testing on Debian 12 and Ubuntu 24.04
 
 ## License
 

@@ -114,7 +114,7 @@ All hook handlers are wrapped in try-catch blocks. On error:
 
 | Type | Tool | How It Works |
 |------|------|-------------|
-| `exec-env` | exec | Credential injected as environment variable in subprocess. Export commands prepended to the command string so the subprocess inherits them. |
+| `exec-env` | exec | Credential injected via `params.env` (passed directly to subprocess spawn, NOT set on `process.env`). A Perl stdout scrubber wraps the command to replace credential values in output before the exec tool captures it. |
 | `http-header` | web_fetch | Credential injected as HTTP header (typically `Authorization: Bearer`). |
 | `browser-password` | browser | `$vault:name` placeholder in fill text resolved after domain-pin validation. |
 | `browser-cookie` | browser | Cookies injected via `_vaultCookies` param on navigate actions matching domain pins. |
@@ -125,10 +125,9 @@ All hook handlers are wrapped in try-catch blocks. On error:
 2. `before_tool_call` fires — `findMatchingRules()` matches "gh" against `commandMatch: "gh *|git *|curl*api.github.com*"`
 3. Credential decrypted (from cache or via Argon2id)
 4. Env var injected: `params.env.GH_TOKEN = "<credential>"`
-5. Export prepended: `params.command = "export GH_TOKEN=[VAULT:env-redacted] && gh pr list"`
-6. Subprocess runs with credential in environment
-7. Subprocess exits — credential dies with it
-8. `after_tool_call` cleans up `process.env.GH_TOKEN`
+5. Command wrapped with Perl stdout scrubber: `{ gh pr list ; } 2>&1 | perl -pe 's/\Qcredential\E/[VAULT:github]/g'` (credentials base64-encoded in the perl command)
+6. Subprocess runs with credential in environment via `params.env`
+7. Subprocess exits — credential dies with it. Perl scrubber replaces credential values in stdout before the exec tool captures output.
 
 ### Pattern Matching
 
@@ -574,13 +573,15 @@ Registered via `api.registerTool()` with `optional: true`. The agent can check r
 
 ## Hot-Reload
 
-When any `vault` CLI command modifies config:
+Config changes take effect without a gateway restart via two mechanisms:
 
+**SIGUSR2 signal (from CLI):** When any `vault` CLI command modifies config:
 1. `tools.yaml` is written atomically (tmp + rename)
 2. SIGUSR2 is sent to the gateway process (via PID file at `~/.openclaw/gateway.pid`)
 3. The plugin's signal handler re-reads config and recompiles scrub rules
 4. Credential cache is preserved if the passphrase hasn't changed
-5. No gateway restart needed
+
+**Auto-reload on tool calls:** The `before_tool_call` hook checks `tools.yaml` mtime on every invocation. If the file has been modified since the last read, config is reloaded automatically before processing. This provides a reliable fallback when SIGUSR2 delivery fails (stale PID file, process restart).
 
 ---
 

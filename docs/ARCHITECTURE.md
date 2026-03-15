@@ -195,12 +195,21 @@ The agent receives the credential on stdout but never has direct access to the e
 ### Interface Protocol
 
 ```
-stdin  → {"tool": "github", "context": "exec", "command": "gh pr list"}
-stdout ← {"credential": "ghp_...", "expires": null}
+stdin  → {"tool": "github", "context": "exec", "command": "gh pr list", "protocol_version": 1}
+stdout ← {"credential": "ghp_...", "expires": null, "protocol_version": 1}
 stderr ← {"error": "EPERM", "message": "..."}  (on failure)
 
-Exit codes: 0=success, 1=not found, 2=decrypt failed, 3=permission denied, 4=seccomp violation
+Exit codes: 0=success, 1=not found, 2=decrypt failed, 3=permission denied, 4=seccomp violation, 5=protocol mismatch
 ```
+
+Both sides include `protocol_version` in their JSON messages. On mismatch, the resolver returns a structured `EPROTO` error with a message explaining which side to update. If the plugin omits `protocol_version` (old versions), the resolver accepts for backward compatibility.
+
+### Resolver Failure Handling
+
+When the resolver fails (binary missing, version mismatch, decryption error), the plugin's behavior is controlled by `onResolverFailure` in `tools.yaml`:
+
+- **`block`** (default): Credential is NOT injected. A warning with the exact fix command is appended to the tool output. The command runs without authentication.
+- **`warn-and-inline`**: Falls back to inline (TypeScript) decryption. A warning is appended and a `security_downgrade` audit event is logged.
 
 ---
 
@@ -227,11 +236,15 @@ This is the most complex hook. It handles four distinct flows:
 1. **Write/edit scrubbing**: If the tool is `write` or `edit`, scrub credential patterns from the content parameter before the file is written
 2. **Browser password**: If the tool is `browser` and text contains `$vault:name`, resolve the placeholder after domain-pin validation
 3. **Browser cookies**: If the tool is `browser` with `navigate` action, inject matching cookies via `_vaultCookies` param
-4. **Standard injection**: For `exec` and `web_fetch`, pattern-match the command/URL against configured rules and inject credentials as env vars or HTTP headers
+4. **Standard injection**: For `exec` and `web_fetch`, pattern-match the command/URL against configured rules and inject credentials as env vars (via `params.env`) or HTTP headers. For exec, a Perl stdout scrubber is also wrapped around the command to replace credential values in subprocess output before the exec tool captures it.
 
-### Scrubbing Layers (all output hooks)
+### Scrubbing Layers
 
-Every output hook applies the same three-layer scrubbing pipeline:
+Scrubbing operates at two levels:
+
+**Subprocess output (Perl stdout scrubber):** For exec tool calls, the command is wrapped in a pipe through `perl -pe` which replaces credential values before the exec tool captures stdout. Credentials are base64-encoded in the perl command (never plaintext in the command string). This catches credentials at the earliest possible point — before they enter the LLM's context window.
+
+**Hook-based scrubbing (all output hooks):** Every output hook applies the same three-layer scrubbing pipeline:
 
 1. **Regex patterns**: Tool-specific patterns (e.g., `ghp_[a-zA-Z0-9]{36}` for GitHub) plus global patterns (Telegram bot tokens, Slack tokens)
 2. **Literal matching**: `indexOf`-based search for exact credential values that were decrypted during injection (catches credentials with no recognizable format)
@@ -279,12 +292,16 @@ Decrypted credentials are cached in memory to avoid repeated Argon2id derivation
 
 ### Hot-Reload
 
-When the user runs any `vault` CLI command that modifies config (add, rotate, remove), the CLI:
+Config changes take effect without a gateway restart via two mechanisms:
 
+**SIGUSR2 signal (from CLI):** When the user runs any `vault` CLI command that modifies config (add, rotate, remove), the CLI:
 1. Writes the updated `tools.yaml` (atomic: tmp + rename)
 2. Sends SIGUSR2 to the gateway process (via PID file at `~/.openclaw/gateway.pid`)
 3. The plugin's SIGUSR2 handler re-reads config and recompiles scrub rules
-4. No gateway restart required — changes take effect immediately
+
+**Auto-reload on tool calls:** The `before_tool_call` hook checks if `tools.yaml` has been modified since the last read (via file mtime). If it has, the config is reloaded automatically before processing the tool call. This handles cases where the SIGUSR2 signal doesn't reach the gateway (e.g., PID file stale after a restart).
+
+Both mechanisms preserve the credential cache if the passphrase hasn't changed.
 
 ---
 

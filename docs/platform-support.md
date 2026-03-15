@@ -18,8 +18,14 @@ The credential vault is developed and tested on Linux (x86_64).
 
 | OS | Arch | Node.js | Status |
 |----|------|---------|--------|
-| Debian 11+ (Bullseye) | x86_64 | 20, 22 | ✅ Primary target |
+| Debian 12+ (Bookworm) | x86_64 | 20, 22 | ✅ Primary target |
 | Ubuntu 22.04+ | x86_64 | 20, 22 | ✅ CI tested |
+
+### Not supported
+
+| OS | Reason |
+|----|--------|
+| Alpine Linux | OpenClaw itself doesn't install cleanly on Alpine — `node-llama-cpp` postinstall requires cmake/xpm, and `--ignore-scripts` breaks `openclaw plugins install`. The vault plugin's TypeScript code is platform-independent and the argon2 npm package ships musl binaries, but there's no way to test the full install path. |
 
 ---
 
