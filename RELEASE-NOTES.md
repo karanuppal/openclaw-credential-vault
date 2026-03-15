@@ -1,4 +1,4 @@
-# Release Notes — 1.0.0-beta.2
+# Release Notes — 1.0.0-beta.3
 
 The first public beta of the OpenClaw Credential Vault.
 
