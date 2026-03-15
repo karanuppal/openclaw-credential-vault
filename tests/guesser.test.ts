@@ -428,7 +428,7 @@ describe("buildToolConfigFromGuess", () => {
     expect(execRules[0].commandMatch).toBe("svc-cli*");
   });
 
-  it("still modifies existing exec rule when suggestedInject is not empty", () => {
+  it("still modifies exis[VAULT:gmail-app] suggestedInject is not empty", () => {
     // Generic API key has a suggested exec rule — overrides should modify, not create new
     const guess = guessCredentialFormat("a".repeat(40), "acme");
     expect(guess.suggestedInject.length).toBeGreaterThan(0);
@@ -442,5 +442,46 @@ describe("buildToolConfigFromGuess", () => {
     expect(execRules).toHaveLength(1);
     expect(execRules[0].env).toHaveProperty("ACME_SECRET");
     expect(execRules[0].commandMatch).toBe("acme-tool*");
+  });
+});
+
+// ─── suggestedUsage defaults ───────────────────────────────────────────────
+
+describe("suggestedUsage defaults", () => {
+  it("suggests browser login ([3]) for password", () => {
+    const result = guessCredentialFormat("MyP@ssw0rd!");
+    expect(result.format).toBe("password");
+    expect(result.suggestedUsage).toEqual([3]);
+  });
+
+  it("suggests API calls ([1]) for JWT", () => {
+    const jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
+    const result = guessCredentialFormat(jwt);
+    expect(result.format).toBe("jwt");
+    expect(result.suggestedUsage).toEqual([1]);
+  });
+
+  it("suggests browser session ([4]) for json-blob", () => {
+    const result = guessCredentialFormat('{"cookies":[{"name":"sid","value":"x"}]}');
+    expect(result.format).toBe("json-blob");
+    expect(result.suggestedUsage).toEqual([4]);
+  });
+
+  it("suggests API calls ([1]) for generic-api-key", () => {
+    const result = guessCredentialFormat("A".repeat(40));
+    expect(result.format).toBe("generic-api-key");
+    expect(result.suggestedUsage).toEqual([1]);
+  });
+
+  it("suggests empty usage for known prefix (auto-configured)", () => {
+    const result = guessCredentialFormat("sk_live_4eC39HqLyjWDarjtT1zdp7dc");
+    expect(result.knownToolName).toBe("stripe");
+    expect(result.suggestedUsage).toEqual([]);
+  });
+
+  it("suggests empty usage for unknown format", () => {
+    const result = guessCredentialFormat("🔑 weird credential with spaces and emojis that's pretty long too");
+    expect(result.format).toBe("unknown");
+    expect(result.suggestedUsage).toEqual([]);
   });
 });

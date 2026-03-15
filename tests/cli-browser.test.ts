@@ -131,7 +131,7 @@ const SAMPLE_COOKIES_NETSCAPE = [
 
 // ── Tests ──
 
-describe("CLI vault add --type/--domain flags", () => {
+describe("CLI vault add browser flags", () => {
   let tmpDir: string;
   let consoleOutput: string[];
   let consoleErrors: string[];
@@ -159,12 +159,12 @@ describe("CLI vault add --type/--domain flags", () => {
   });
 
   describe("command registration", () => {
-    it("should register --type and --domain options on vault add", () => {
+    it("should register --use and --domain options on vault add", () => {
       const program = createMockProgram();
       registerCliCommands(program as any);
 
       const addCmd = getAddCommand(program);
-      expect(addCmd.options.has("type")).toBe(true);
+      expect(addCmd.options.has("use")).toBe(true);
       expect(addCmd.options.has("domain")).toBe(true);
     });
   });
@@ -397,7 +397,7 @@ describe("CLI vault add --type/--domain flags", () => {
       expect(output).not.toContain("cookies for");
       expect(output).not.toContain("browser fill");
       // Should see standard credential stored message
-      expect(output).toContain("Credential stored: stripe");
+      expect(output).toContain("Credential encrypted and stored");
     });
   });
 });

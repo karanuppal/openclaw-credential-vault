@@ -43,6 +43,33 @@ export interface ScrubConfig {
   patterns: string[]; // regex patterns to match credential fragments
 }
 
+/** User's usage selection for vault add interactive/non-interactive flow */
+export interface UsageSelection {
+  /** API call injection (HTTP header) */
+  apiCalls?: {
+    urlPattern: string;  // e.g., "*api.gumroad.com/*"
+    headerName: string;  // e.g., "Authorization" or "x-resy-auth-token"
+    headerFormat: string; // e.g., "Bearer $token" or "$token"
+  };
+  /** CLI tool injection (environment variable) */
+  cliTool?: {
+    commandName?: string; // e.g., "gh" — UX shortcut, auto-generates commandMatch
+    commandMatch: string; // e.g., "gh*", "*gumroad*" — glob pattern
+    envVar: string;       // e.g., "GUMROAD_TOKEN"
+  };
+  /** Browser login injection (password fill) */
+  browserLogin?: {
+    domain: string; // e.g., ".gumroad.com"
+  };
+  /** Browser session injection (cookie jar) */
+  browserSession?: {
+    domain: string;
+    cookieFilePath: string; // path to JSON/Netscape cookie file
+  };
+  /** User-provided regex scrub patterns */
+  scrubPatterns: string[];
+}
+
 /** Known tool definition (ships with plugin) */
 export interface KnownToolDef {
   inject: InjectionRule[];

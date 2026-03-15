@@ -39,13 +39,14 @@ import {
   guessCredentialFormat,
   formatGuessDisplay,
   buildToolConfigFromGuess,
+  buildToolConfig,
 } from "./guesser.js";
 import {
   parseCookieJson,
   parseNetscapeCookies,
   getEarliestExpiry,
 } from "./browser.js";
-import { ToolConfig, CliProgram, PlaywrightCookie } from "./types.js";
+import { ToolConfig, CliProgram, PlaywrightCookie, UsageSelection, InjectionRule, ScrubConfig } from "./types.js";
 
 /**
  * Validate a tool name for safety and filesystem compatibility.
@@ -191,8 +192,75 @@ export async function readStdinInput(prompt: string): Promise<string> {
 }
 
 /**
+ * Securely delete a file by overwriting with zeros then unlinking.
+ */
+async function secureDeleteFile(filePath: string): Promise<void> {
+  try {
+    const stat = fs.statSync(filePath);
+    const size = stat.size;
+    if (size > 0) {
+      const fd = fs.openSync(filePath, "w");
+      const chunkSize = 65536;
+      const zeros = Buffer.alloc(chunkSize);
+      let remaining = size;
+      while (remaining > 0) {
+        const chunk = Math.min(remaining, chunkSize);
+        fs.writeSync(fd, zeros, 0, chunk);
+        remaining -= chunk;
+      }
+      fs.closeSync(fd);
+    }
+    fs.unlinkSync(filePath);
+  } catch (err) {
+    console.error(`Warning: Could not securely delete file: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * Write tool config to tools.yaml and signal gateway reload.
+ */
+async function writeToolConfigEntry(
+  tool: string,
+  inject: InjectionRule[],
+  scrub: ScrubConfig,
+  options: Record<string, unknown>,
+  config: import("./types.js").VaultConfig,
+  vaultDir: string
+): Promise<void> {
+  const now = new Date().toISOString();
+
+  const rotation: import("./types.js").RotationMetadata = {};
+  if (options["label"]) rotation.label = options["label"] as string;
+  if (options["rotationInterval"]) rotation.rotationIntervalDays = parseInt(options["rotationInterval"] as string, 10);
+  if (options["scopes"]) rotation.scopes = (options["scopes"] as string).split(",").map((s) => s.trim());
+  if (options["rotationProcedure"]) rotation.rotationProcedure = options["rotationProcedure"] as string;
+  if (options["revokeUrl"]) rotation.revokeUrl = options["revokeUrl"] as string;
+  if (options["rotationSupport"]) rotation.rotationSupport = options["rotationSupport"] as any;
+
+  const toolConfig: ToolConfig = {
+    name: tool,
+    addedAt: now,
+    lastRotated: now,
+    inject,
+    scrub,
+    rotation: Object.keys(rotation).length > 0 ? rotation : undefined,
+  };
+
+  const updatedConfig = upsertTool(config, toolConfig);
+  writeConfig(vaultDir, updatedConfig);
+
+  const reloaded = signalGatewayReload();
+  if (reloaded) {
+    console.log("✓ Gateway reloaded (SIGUSR2) — no restart needed");
+  }
+
+  console.log(`\nTool "${tool}" is ready. Your agent can now use it without seeing the credential.`);
+}
+
+/**
  * Handle `vault add <tool> --type browser-cookie --domain <domain>`.
  * Prompts for cookie paste (JSON array or Netscape format).
+ * @deprecated Use --use browser-session with --cookie-file instead.
  */
 async function handleBrowserCookieAdd(tool: string, domain?: string): Promise<void> {
   if (!domain) {
@@ -340,6 +408,177 @@ async function handleBrowserPasswordAdd(tool: string, key?: string, domain?: str
 }
 
 /**
+ * Non-interactive path for vault add when --use flags are provided.
+ */
+async function handleVaultAddWithUse(
+  tool: string,
+  options: {
+    key?: string;
+    use?: string;
+    url?: string;
+    header?: string;
+    bearer?: boolean;
+    command?: string;
+    env?: string;
+    domain?: string;
+    cookieFile?: string;
+    scrubPattern?: string;
+    yes?: boolean;
+    [key: string]: unknown;
+  },
+  config: import("./types.js").VaultConfig,
+  vaultDir: string,
+  passphrase: string
+): Promise<void> {
+  const usageTypes = (options.use ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  const hasBrowserSession = usageTypes.includes("browser-session");
+
+  // Validate --yes requirements: all required flags must be present
+  if (options.yes) {
+    for (const type of usageTypes) {
+      if (type === "api" && !options.url) {
+        console.error("Error: --yes requires either a known credential format or --use with all required flags.");
+        return;
+      }
+      if (type === "browser-login" && !options.domain) {
+        console.error("Error: --yes requires either a known credential format or --use with all required flags.");
+        return;
+      }
+      if (type === "browser-session" && (!options.domain || !options.cookieFile)) {
+        console.error("Error: --yes requires either a known credential format or --use with all required flags.");
+        return;
+      }
+    }
+  }
+
+  const usage: UsageSelection = { scrubPatterns: [] };
+  if (options.scrubPattern) {
+    usage.scrubPatterns = [options.scrubPattern];
+  }
+
+  // Handle browser-session: read cookie file and encrypt
+  if (hasBrowserSession) {
+    if (!options.cookieFile) {
+      console.error("Error: --cookie-file is required for --use browser-session");
+      return;
+    }
+    if (!options.domain) {
+      console.error("Error: --domain is required for --use browser-session");
+      return;
+    }
+
+    let fileContent: string;
+    try {
+      fileContent = fs.readFileSync(options.cookieFile, "utf-8");
+    } catch (err) {
+      console.error(`Error reading cookie file: ${(err as Error).message}`);
+      return;
+    }
+
+    let cookies: PlaywrightCookie[];
+    try {
+      const trimmed = fileContent.trim();
+      if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+        cookies = parseCookieJson(fileContent);
+      } else {
+        cookies = parseNetscapeCookies(fileContent);
+      }
+    } catch (err) {
+      console.error(`Error parsing cookie file: ${(err as Error).message}`);
+      return;
+    }
+
+    if (cookies.length === 0) {
+      console.error("Error: No valid cookies found in file.");
+      return;
+    }
+
+    const credentialPayload = JSON.stringify({
+      cookies,
+      domain: options.domain,
+      capturedAt: new Date().toISOString(),
+    });
+
+    await writeCredentialFile(vaultDir, tool, credentialPayload, passphrase);
+    if (config.resolverMode === "binary") {
+      syncToSystemVault(vaultDir, tool);
+    }
+    console.log(`✓ Stored ${cookies.length} cookies for ${options.domain} (AES-256-GCM encrypted)`);
+
+    // Prompt to delete source file (skip if --yes)
+    if (!options.yes) {
+      const deleteAnswer = await promptUser(`  Delete source file ${options.cookieFile}? [Y/n]: `);
+      if (deleteAnswer.toLowerCase() !== "n" && deleteAnswer.toLowerCase() !== "no") {
+        await secureDeleteFile(options.cookieFile);
+        console.log("  ✓ Source file securely deleted.");
+      }
+    }
+
+    usage.browserSession = {
+      domain: options.domain,
+      cookieFilePath: options.cookieFile,
+    };
+  } else {
+    // Non-browser-session types need --key
+    if (!options.key) {
+      console.error("Error: --key is required. Usage: vault add <tool> --key <credential>");
+      return;
+    }
+
+    await writeCredentialFile(vaultDir, tool, options.key, passphrase);
+    if (config.resolverMode === "binary") {
+      const syncOk = syncToSystemVault(vaultDir, tool);
+      if (!syncOk) {
+        console.log(`\n⚠ Warning: Credential stored locally but NOT synced to system vault.`);
+      }
+    }
+    console.log(`\n✓ Credential encrypted and stored (AES-256-GCM)`);
+
+    // Show detection
+    const guess = guessCredentialFormat(options.key, tool);
+    console.log(`  Detected: ${guess.displayName}`);
+  }
+
+  // Build UsageSelection from flags
+  for (const type of usageTypes) {
+    if (type === "api") {
+      const urlPattern = options.url ?? `*${tool}*`;
+      const headerName = options.header ?? "Authorization";
+      const headerFormat = options.bearer !== false ? "Bearer $token" : "$token";
+      usage.apiCalls = { urlPattern, headerName, headerFormat };
+
+    } else if (type === "cli") {
+      const commandName = options.command;
+      const commandMatch = commandName ? `${commandName}*` : `${tool}*`;
+      const defaultEnvVar = `${tool.toUpperCase().replace(/-/g, "_")}_API_KEY`;
+      const envVar = options.env ?? defaultEnvVar;
+      usage.cliTool = {
+        commandName: commandName || undefined,
+        commandMatch,
+        envVar,
+      };
+
+    } else if (type === "browser-login") {
+      if (!options.domain) {
+        console.error("Error: --domain is required for --use browser-login");
+        return;
+      }
+      usage.browserLogin = { domain: options.domain };
+
+    } else if (type === "browser-session") {
+      // Already handled above — just set the usage field
+      // (usage.browserSession is already set)
+    } else {
+      console.error(`Error: Unknown usage type "${type}". Valid types: api, cli, browser-login, browser-session`);
+      return;
+    }
+  }
+
+  const { inject, scrub } = buildToolConfig(tool, usage);
+  await writeToolConfigEntry(tool, inject, scrub, options, config, vaultDir);
+}
+
+/**
  * Register all vault CLI commands on the given program.
  */
 export function registerCliCommands(program: CliProgram): void {
@@ -413,10 +652,31 @@ export function registerCliCommands(program: CliProgram): void {
     .description("Add a credential to the vault")
     .argument("<tool>", "Tool name (e.g., gumroad, stripe, github)")
     .option("--key <credential>", "The credential/API key to store")
-    .option("--type <type>", "Credential type: browser-cookie, browser-password, or omit for default")
-    .option("--domain <domain>", "Domain pin (required for browser-cookie/browser-password, e.g. .amazon.com)")
-    .option("--yes", "Skip confirmation prompt (accept defaults)")
-    .action(async (tool: string, options: { key?: string; type?: string; domain?: string; yes?: boolean }) => {
+    .option("--use <types>", "Usage types (comma-separated): api,cli,browser-login,browser-session")
+    .option("--url <pattern>", "URL match pattern for API header injection")
+    .option("--header <name>", "HTTP header name for API injection (default: Authorization)")
+    .option("--no-bearer", "Don't prepend 'Bearer ' to value (for API injection)")
+    .option("--command <name>", "CLI command name for command matching")
+    .option("--env <name>", "Environment variable name for CLI injection")
+    .option("--domain <domain>", "Domain for browser-login or browser-session")
+    .option("--cookie-file <path>", "Path to cookie file for browser-session (JSON or Netscape)")
+    .option("--scrub-pattern <regex>", "Add a regex pattern for output scrubbing")
+    .option("--yes", "Skip confirmation prompt (requires known format or --use with all required flags)")
+    .action(async (tool: string, options: {
+      key?: string;
+      use?: string;
+      url?: string;
+      header?: string;
+      bearer?: boolean; // Commander sets false when --no-bearer is passed
+      command?: string;
+      env?: string;
+      domain?: string;
+      cookieFile?: string;
+      scrubPattern?: string;
+      yes?: boolean;
+      // Legacy/passthrough fields
+      type?: string;
+    }) => {
       // Validate tool name
       const nameError = validateToolName(tool);
       if (nameError) {
@@ -424,20 +684,13 @@ export function registerCliCommands(program: CliProgram): void {
         return;
       }
 
-      // Route to browser-cookie handler
+      // ── Legacy --type routing (kept for backward compat) ──
       if (options.type === "browser-cookie") {
         await handleBrowserCookieAdd(tool, options.domain);
         return;
       }
-
-      // Route to browser-password handler
       if (options.type === "browser-password") {
         await handleBrowserPasswordAdd(tool, options.key, options.domain);
-        return;
-      }
-
-      if (!options.key) {
-        console.error("Error: --key is required. Usage: vault add <tool> --key <credential>");
         return;
       }
 
@@ -458,154 +711,244 @@ export function registerCliCommands(program: CliProgram): void {
         }
       }
 
-      // ── Phase 3A: Credential Format Guessing ──
-      const guess = guessCredentialFormat(options.key, tool);
-
-      // Display detection result
-      console.log("");
-      console.log(formatGuessDisplay(guess, tool));
-
-      // If known tool was detected with a different name, inform user
-      if (guess.knownToolName && guess.knownToolName !== tool) {
-        console.log(`\n  ℹ This looks like a ${guess.knownToolName} credential — storing as "${tool}"`);
-      }
-
-      // ── Confirmation prompt: Does this look right? [Y/n/edit] ──
-      const confirmation = options.yes ? "Y" : await promptUser("\n  Does this look right? [Y/n/edit] ");
-      const confirmLower = confirmation.toLowerCase();
-
-      if (confirmLower === "n" || confirmLower === "no") {
-        console.log("\n✗ Aborted — credential not stored.");
+      // ── Non-interactive path: --use flags provided ──
+      if (options.use) {
+        await handleVaultAddWithUse(tool, options, config, vaultDir, passphrase);
         return;
       }
 
-      // Collect overrides for buildToolConfigFromGuess
-      const overrides: { apiUrl?: string; cliTool?: string; serviceName?: string; envVarName?: string; commandMatch?: string } = {};
+      if (!options.key) {
+        console.error("Error: --key is required. Usage: vault add <tool> --key <credential>");
+        return;
+      }
 
-      if (confirmLower === "edit" || confirmLower === "e") {
-        // Edit mode: prompt for all overridable fields
-        const svcAnswer = await promptUser("  What service is this for? ");
-        if (svcAnswer) overrides.serviceName = svcAnswer;
-        const urlAnswer = await promptUser("  API base URL? ");
-        if (urlAnswer) overrides.apiUrl = urlAnswer;
-        const cliAnswer = await promptUser("  CLI tool name (if any, press Enter to skip)? ");
-        if (cliAnswer) overrides.cliTool = cliAnswer;
+      // ── Detect format ──
+      const guess = guessCredentialFormat(options.key, tool);
 
-        // Always ask for env var name and command match in edit mode
-        const defaultEnvVar = guess.suggestedInject[0]?.env
-          ? Object.keys(guess.suggestedInject[0].env)[0]
-          : `${tool.toUpperCase().replace(/-/g, "_")}_API_KEY`;
-        const envAnswer = await promptUser(`  Environment variable name [${defaultEnvVar}]: `);
-        if (envAnswer.trim()) {
-          if (!overrides.envVarName) overrides.envVarName = envAnswer.trim();
+      // ── Known-prefix auto-config path (high confidence) ──
+      if (guess.knownToolName && guess.confidence === "high") {
+        if (!options.key) {
+          console.error("Error: --key is required. Usage: vault add <tool> --key <credential>");
+          return;
         }
 
-        const defaultMatch = guess.suggestedInject[0]?.commandMatch ?? `${tool}*`;
-        const matchAnswer = await promptUser(`  Command pattern to match [${defaultMatch}]: `);
-        if (matchAnswer.trim()) {
-          if (!overrides.commandMatch) overrides.commandMatch = matchAnswer.trim();
-        }
-      } else if (guess.needsPrompt && !options.yes) {
-        // Unknown/generic format: prompt for missing context
-        if (guess.promptHints.askServiceName) {
-          const svcAnswer = await promptUser("\n  What service is this for? ");
-          if (svcAnswer) overrides.serviceName = svcAnswer;
-        }
-        if (guess.promptHints.askApiUrl) {
-          const urlAnswer = await promptUser("  API base URL? ");
-          if (urlAnswer) overrides.apiUrl = urlAnswer;
-        }
-        if (guess.promptHints.askCliTool) {
-          const cliAnswer = await promptUser("  CLI tool name (if any, press Enter to skip)? ");
-          if (cliAnswer) overrides.cliTool = cliAnswer;
-        }
-
-        // Ask for env var name when the guesser used a generic name
-        if (guess.confidence === "low" || guess.format === "generic-api-key" || guess.format === "password" || guess.format === "unknown") {
-          const defaultEnvVar = guess.suggestedInject[0]?.env
-            ? Object.keys(guess.suggestedInject[0].env)[0]
-            : `${tool.toUpperCase().replace(/-/g, "_")}_API_KEY`;
-          const envAnswer = await promptUser(`  Environment variable name [${defaultEnvVar}]: `);
-          if (envAnswer.trim()) {
-            overrides.envVarName = envAnswer.trim();
-          }
-
-          const defaultMatch = guess.suggestedInject[0]?.commandMatch ?? `${tool}*`;
-          const matchAnswer = await promptUser(`  Command pattern to match [${defaultMatch}]: `);
-          if (matchAnswer.trim()) {
-            overrides.commandMatch = matchAnswer.trim();
+        // Encrypt first
+        console.log("");
+        await writeCredentialFile(vaultDir, tool, options.key, passphrase);
+        if (config.resolverMode === "binary") {
+          const syncOk = syncToSystemVault(vaultDir, tool);
+          if (!syncOk) {
+            console.log(`\n⚠ Warning: Credential stored locally but NOT synced to system vault.`);
           }
         }
-      }
+        console.log(`✓ Credential encrypted and stored (AES-256-GCM)`);
+        console.log(formatGuessDisplay(guess, tool));
 
-      // Encrypt and store
-      const filePath = await writeCredentialFile(vaultDir, tool, options.key, passphrase);
-      if (config.resolverMode === "binary") {
-        const syncOk = syncToSystemVault(vaultDir, tool);
-        if (!syncOk) {
-          console.log(`\n⚠ Warning: Credential stored locally but NOT synced to system vault.`);
-          console.log(`  The binary resolver won't find this credential.`);
-          console.log(`  Fix: Run 'sudo bash vault-setup.sh'`);
+        if (guess.knownToolName !== tool) {
+          console.log(`\n  ℹ This looks like a ${guess.knownToolName} credential — storing as "${tool}"`);
         }
-      }
-      console.log(`\n✓ Credential stored: ${tool} (AES-256-GCM encrypted)`);
 
-      // Build tool config from guess (with any overrides)
-      const { inject, scrub } = buildToolConfigFromGuess(tool, guess, overrides);
-      const now = new Date().toISOString();
-
-      // Build rotation metadata from CLI options
-      const rotation: import("./types.js").RotationMetadata = {};
-      if ((options as any).label) rotation.label = (options as any).label;
-      if ((options as any).rotationInterval) rotation.rotationIntervalDays = parseInt((options as any).rotationInterval, 10);
-      if ((options as any).scopes) rotation.scopes = (options as any).scopes.split(",").map((s: string) => s.trim());
-      if ((options as any).rotationProcedure) rotation.rotationProcedure = (options as any).rotationProcedure;
-      if ((options as any).revokeUrl) rotation.revokeUrl = (options as any).revokeUrl;
-      if ((options as any).rotationSupport) rotation.rotationSupport = (options as any).rotationSupport as any;
-
-      const toolConfig: ToolConfig = {
-        name: tool,
-        addedAt: now,
-        lastRotated: now,
-        inject,
-        scrub,
-        rotation: Object.keys(rotation).length > 0 ? rotation : undefined,
-      };
-
-      // Display what was configured
-      if (inject.length > 0) {
-        console.log("✓ Injection configured:");
-        for (const rule of inject) {
-          if (rule.commandMatch) {
-            console.log(`    ${rule.tool} commands matching: ${rule.commandMatch}`);
-          }
-          if (rule.urlMatch) {
-            console.log(`    ${rule.tool} URLs matching: ${rule.urlMatch}`);
+        if (!options.yes) {
+          const confirm = await promptUser("\nSave? [Y/n] ");
+          if (confirm.toLowerCase() === "n" || confirm.toLowerCase() === "no") {
+            console.log("\n✗ Aborted.");
+            return;
           }
         }
-        console.log("\nℹ Credentials are injected via environment variables, not command string tokens.");
-        console.log("  Use $ENVVAR_NAME in your commands (e.g., curl -H \"Authorization: Bearer $GITHUB_TOKEN\" ...)");
-      }
-      if (scrub.patterns.length > 0) {
-        console.log(`✓ Scrubbing patterns registered: ${scrub.patterns.join(", ")}`);
-      }
 
-      const updatedConfig = upsertTool(config, toolConfig);
-      writeConfig(vaultDir, updatedConfig);
+        const inject = [...guess.suggestedInject];
+        const scrub = { patterns: [...guess.suggestedScrub.patterns] };
+        if (options.scrubPattern) scrub.patterns.push(options.scrubPattern);
 
-      // Signal hot-reload
-      const reloaded = signalGatewayReload();
-      if (reloaded) {
-        console.log("✓ Gateway reloaded (SIGUSR2) — no restart needed");
+        await writeToolConfigEntry(tool, inject, scrub, options as any, config, vaultDir);
+        return;
       }
 
-      if (options.yes && (guess.confidence === "low" || guess.format === "unknown" || guess.format === "password")) {
-        console.log(`\n⚠ Auto-detected injection config may not be correct for "${tool}".`);
-        console.log(`  Review with: openclaw vault show ${tool}`);
-        console.log(`  Edit tools.yaml manually if env var names or command patterns need adjustment.`);
+      // ── Interactive flow (no --use, no known prefix) ──
+      if (options.yes) {
+        console.error("Error: --yes requires either a known credential format or --use with all required flags.");
+        return;
       }
 
-      console.log(`\nTool "${tool}" is ready. Your agent can now use it without seeing the credential.`);
+      // Encrypt key first if provided
+      console.log("");
+      if (options.key) {
+        await writeCredentialFile(vaultDir, tool, options.key, passphrase);
+        if (config.resolverMode === "binary") {
+          syncToSystemVault(vaultDir, tool);
+        }
+        console.log(`✓ Credential encrypted and stored (AES-256-GCM)`);
+      }
+      console.log(`  Detected: ${guess.displayName}`);
+      console.log("");
+
+      // Show usage menu
+      console.log("How will your agent use this credential?\n");
+      console.log("  1. API calls      — HTTP requests to a web service");
+      console.log("  2. CLI tool       — command-line programs (gh, aws, curl)");
+      console.log("  3. Browser login  — fill a password on a website");
+      console.log("  4. Browser session — use cookies from a logged-in session");
+      console.log("");
+
+      const defaultUsage = guess.suggestedUsage.join(",");
+      const defaultDisplay = defaultUsage ? ` [${defaultUsage}]` : "";
+      const usageAnswer = await promptUser(`Choose one or more (comma-separated)${defaultDisplay}: `);
+      const chosenStr = usageAnswer.trim() || defaultUsage;
+      const chosenNums = chosenStr
+        .split(",")
+        .map((s) => parseInt(s.trim(), 10))
+        .filter((n) => !isNaN(n) && n >= 1 && n <= 4);
+
+      if (chosenNums.length === 0) {
+        console.log("No valid usage selected. Aborting.");
+        return;
+      }
+
+      const usage: UsageSelection = { scrubPatterns: [] };
+      let credentialEncryptedAsCookies = false;
+
+      // Collect usage-specific details
+      for (const num of chosenNums) {
+        if (num === 1) {
+          // API calls
+          const domainAnswer = await promptUser("  API domain or URL: ");
+          const urlPattern = domainAnswer.trim() ? `*${domainAnswer.trim()}/*` : "*";
+          const headerAnswer = await promptUser("  Header name [Authorization]: ");
+          const headerName = headerAnswer.trim() || "Authorization";
+          const formatAnswer = await promptUser("  Value format [Bearer $token]: ");
+          const headerFormat = formatAnswer.trim() || "Bearer $token";
+          usage.apiCalls = { urlPattern, headerName, headerFormat };
+
+        } else if (num === 2) {
+          // CLI tool
+          const commandAnswer = await promptUser("  CLI command name (or Enter for general scripts): ");
+          let commandMatch: string;
+          if (commandAnswer.trim()) {
+            commandMatch = `${commandAnswer.trim()}*`;
+          } else {
+            const patternAnswer = await promptUser("  Command pattern (glob, e.g. myservice*): ");
+            commandMatch = patternAnswer.trim() || `${tool}*`;
+          }
+          const defaultEnvVar = `${tool.toUpperCase().replace(/-/g, "_")}_API_KEY`;
+          const envAnswer = await promptUser(`  Environment variable [${defaultEnvVar}]: `);
+          const envVar = envAnswer.trim() || defaultEnvVar;
+          usage.cliTool = {
+            commandName: commandAnswer.trim() || undefined,
+            commandMatch,
+            envVar,
+          };
+
+        } else if (num === 3) {
+          // Browser login
+          const domainAnswer = await promptUser("  Website domain: ");
+          usage.browserLogin = { domain: domainAnswer.trim() };
+
+        } else if (num === 4) {
+          // Browser session — need cookie file
+          const domainAnswer = await promptUser("  Cookie domain: ");
+          const cookieFileAnswer = await promptUser("  Path to cookies file (JSON or Netscape format): ");
+          const cookieFilePath = cookieFileAnswer.trim();
+
+          // Read and encrypt cookie data
+          let fileContent: string;
+          try {
+            fileContent = fs.readFileSync(cookieFilePath, "utf-8");
+          } catch (err) {
+            console.error(`Error reading cookie file: ${(err as Error).message}`);
+            return;
+          }
+
+          let cookies: PlaywrightCookie[];
+          try {
+            const trimmed = fileContent.trim();
+            if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+              cookies = parseCookieJson(fileContent);
+            } else {
+              cookies = parseNetscapeCookies(fileContent);
+            }
+          } catch (err) {
+            console.error(`Error parsing cookie file: ${(err as Error).message}`);
+            return;
+          }
+
+          if (cookies.length === 0) {
+            console.error("Error: No valid cookies found in file.");
+            return;
+          }
+
+          const domain = domainAnswer.trim();
+          const credentialPayload = JSON.stringify({
+            cookies,
+            domain,
+            capturedAt: new Date().toISOString(),
+          });
+
+          // Encrypt cookie data (may overwrite key encrypted above)
+          await writeCredentialFile(vaultDir, tool, credentialPayload, passphrase);
+          if (config.resolverMode === "binary") {
+            syncToSystemVault(vaultDir, tool);
+          }
+          console.log(`  ✓ Cookies encrypted and stored.`);
+          credentialEncryptedAsCookies = true;
+
+          // Prompt to delete source file
+          const deleteAnswer = await promptUser(`  Delete source file ${cookieFilePath}? [Y/n]: `);
+          if (deleteAnswer.toLowerCase() !== "n" && deleteAnswer.toLowerCase() !== "no") {
+            await secureDeleteFile(cookieFilePath);
+            console.log("  ✓ Source file securely deleted.");
+          } else {
+            console.log(`  ⚠ Source file still exists at ${cookieFilePath}`);
+          }
+
+          usage.browserSession = { domain, cookieFilePath };
+        }
+      }
+
+      // Ask about additional scrub patterns
+      console.log("\nOutput scrubbing (protects against credential leakage):");
+      console.log("  ✓ Literal match: always active — your exact credential value will be");
+      console.log("    redacted from all agent output, messages, and transcripts.");
+      console.log("    (Stored in memory only — never written to config files.)");
+      console.log("");
+      const addScrub = await promptUser("  Add a regex pattern to also catch similar credentials? [N/y]: ");
+      if (addScrub.toLowerCase() === "y" || addScrub.toLowerCase() === "yes") {
+        const pattern = await promptUser("  Regex pattern: ");
+        if (pattern.trim()) {
+          usage.scrubPatterns = [pattern.trim()];
+        }
+      }
+      if (options.scrubPattern) {
+        usage.scrubPatterns.push(options.scrubPattern);
+      }
+
+      // Build config
+      const { inject, scrub } = buildToolConfig(tool, usage);
+
+      // Show summary
+      console.log(`\nSummary for "${tool}":`);
+      console.log(`  ✓ Encrypted:  AES-256-GCM`);
+      for (const rule of inject) {
+        if (rule.type === "browser-password") {
+          console.log(`  ✓ Injection:  browser login on ${rule.domainPin?.[0]}`);
+        } else if (rule.type === "browser-cookie") {
+          console.log(`  ✓ Injection:  browser session on ${rule.domainPin?.[0]}`);
+        } else if (rule.tool === "web_fetch") {
+          console.log(`  ✓ Injection:  API calls to ${rule.urlMatch}`);
+        } else if (rule.tool === "exec") {
+          console.log(`  ✓ Injection:  CLI commands matching ${rule.commandMatch}`);
+        }
+      }
+      const scrubNote = scrub.patterns.length > 0 ? ` + ${scrub.patterns.length} regex pattern(s)` : "";
+      console.log(`  ✓ Scrubbing:  literal match (always active)${scrubNote}`);
+
+      // Confirm
+      const confirm = await promptUser("\nSave? [Y/n] ");
+      if (confirm.toLowerCase() === "n" || confirm.toLowerCase() === "no") {
+        console.log("\n✗ Aborted.");
+        return;
+      }
+
+      await writeToolConfigEntry(tool, inject, scrub, options as any, config, vaultDir);
     });
 
   // vault list

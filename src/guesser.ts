@@ -7,7 +7,7 @@
  * 3. Suggested injection config (type, command/URL match, scrub pattern)
  */
 
-import { InjectionRule, ScrubConfig, KnownToolDef } from "./types.js";
+import { InjectionRule, ScrubConfig, KnownToolDef, UsageSelection } from "./types.js";
 import { KNOWN_TOOLS, generateScrubPattern } from "./registry.js";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -44,6 +44,12 @@ export interface GuessResult {
   needsPrompt: boolean;
   /** Prompt hints for interactive flow */
   promptHints: PromptHints;
+  /**
+   * Suggested usage type numbers for the new interactive flow menu:
+   *   1 = API calls, 2 = CLI tool, 3 = Browser login, 4 = Browser session
+   * Empty array means no default suggestion.
+   */
+  suggestedUsage: number[];
 }
 
 export interface PromptHints {
@@ -164,6 +170,7 @@ export function guessCredentialFormat(value: string, toolName?: string): GuessRe
           askCliTool: false,
           askInjectionType: false,
         },
+        suggestedUsage: [], // auto-configured from known template
       };
     }
   }
@@ -191,6 +198,7 @@ export function guessCredentialFormat(value: string, toolName?: string): GuessRe
         askCliTool: true,
         askInjectionType: false, // JWT is almost always Bearer
       },
+      suggestedUsage: [1], // API calls (Bearer header)
     };
   }
 
@@ -210,6 +218,7 @@ export function guessCredentialFormat(value: string, toolName?: string): GuessRe
         askCliTool: false,
         askInjectionType: true,
       },
+      suggestedUsage: [4], // Browser session (cookie jar)
     };
   }
 
@@ -229,6 +238,7 @@ export function guessCredentialFormat(value: string, toolName?: string): GuessRe
         askCliTool: false,
         askInjectionType: true,
       },
+      suggestedUsage: [3], // Browser login (password fill)
     };
   }
 
@@ -258,6 +268,7 @@ export function guessCredentialFormat(value: string, toolName?: string): GuessRe
         askCliTool: true,
         askInjectionType: false,
       },
+      suggestedUsage: [1], // API calls
     };
   }
 
@@ -276,6 +287,7 @@ export function guessCredentialFormat(value: string, toolName?: string): GuessRe
       askCliTool: true,
       askInjectionType: true,
     },
+    suggestedUsage: [], // no default suggestion
   };
 }
 
@@ -446,6 +458,66 @@ export function buildToolConfigFromGuess(
   }
 
   return { inject, scrub };
+}
+
+// ─── New buildToolConfig ─────────────────────────────────────────────────────
+
+/**
+ * Build a ToolConfig from a structured UsageSelection.
+ * Replaces buildToolConfigFromGuess for the new interactive/non-interactive flow.
+ *
+ * Each usage type maps to exactly one InjectionRule — no find-and-modify logic.
+ * The credential VALUE is never stored here; only $vault: placeholders.
+ */
+export function buildToolConfig(
+  toolName: string,
+  usage: UsageSelection
+): { inject: InjectionRule[]; scrub: ScrubConfig } {
+  const inject: InjectionRule[] = [];
+
+  // API calls → web_fetch header injection
+  if (usage.apiCalls) {
+    const headerValue = usage.apiCalls.headerFormat.replace("$token", `$vault:${toolName}`);
+    inject.push({
+      tool: "web_fetch",
+      urlMatch: usage.apiCalls.urlPattern,
+      headers: { [usage.apiCalls.headerName]: headerValue },
+    });
+  }
+
+  // CLI tool → exec env injection
+  if (usage.cliTool) {
+    inject.push({
+      tool: "exec",
+      commandMatch: usage.cliTool.commandMatch,
+      env: { [usage.cliTool.envVar]: `$vault:${toolName}` },
+    });
+  }
+
+  // Browser login → browser-password with domain pinning
+  if (usage.browserLogin) {
+    inject.push({
+      tool: "browser",
+      type: "browser-password",
+      domainPin: [usage.browserLogin.domain],
+      method: "fill",
+    });
+  }
+
+  // Browser session → browser-cookie with domain pinning
+  if (usage.browserSession) {
+    inject.push({
+      tool: "browser",
+      type: "browser-cookie",
+      domainPin: [usage.browserSession.domain],
+      method: "cookie-jar",
+    });
+  }
+
+  return {
+    inject,
+    scrub: { patterns: usage.scrubPatterns },
+  };
 }
 
 /**
