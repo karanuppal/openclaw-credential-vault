@@ -114,8 +114,11 @@ One question. Domain pinning configured automatically. Agent uses `$vault:gumroa
 ```
   Cookie domain: .gumroad.com
   Path to cookies file (JSON or Netscape format): /path/to/cookies.json
+  ✓ Cookies encrypted and stored.
+  Delete source file /path/to/cookies.json? [Y/n]: y
+  ✓ Source file securely deleted.
 ```
-Accepts a file path instead of pasting. Simpler and doesn't require users to know Ctrl+D.
+Accepts a file path instead of pasting. After encrypting the cookies, prompts to securely delete the source file (overwrite with zeros, then delete). If declined, warns that the plaintext file still exists.
 
 ### Step 4: Scrubbing
 
