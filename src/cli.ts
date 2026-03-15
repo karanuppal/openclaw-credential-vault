@@ -38,7 +38,6 @@ import { readAuditLog, computeAuditStats } from "./audit.js";
 import {
   guessCredentialFormat,
   formatGuessDisplay,
-  buildToolConfigFromGuess,
   buildToolConfig,
 } from "./guesser.js";
 import {
@@ -255,156 +254,6 @@ async function writeToolConfigEntry(
   }
 
   console.log(`\nTool "${tool}" is ready. Your agent can now use it without seeing the credential.`);
-}
-
-/**
- * Handle `vault add <tool> --type browser-cookie --domain <domain>`.
- * Prompts for cookie paste (JSON array or Netscape format).
- * @deprecated Use --use browser-session with --cookie-file instead.
- */
-async function handleBrowserCookieAdd(tool: string, domain?: string): Promise<void> {
-  if (!domain) {
-    console.error("Error: --domain is required for --type browser-cookie");
-    console.error("Usage: vault add <tool> --type browser-cookie --domain .example.com");
-    return;
-  }
-
-  const vaultDir = getVaultDir();
-  const config = readConfig(vaultDir);
-  const passphrase = getPassphrase(vaultDir);
-
-  // Prompt for cookie input
-  const input = await readStdinInput("Paste cookies (JSON array or Netscape format):\n> ");
-
-  if (!input) {
-    console.error("Error: No cookie data provided.");
-    return;
-  }
-
-  // Parse cookies — try JSON first, then Netscape
-  let cookies: import("./types.js").PlaywrightCookie[];
-  try {
-    const trimmed = input.trim();
-    if (trimmed.startsWith("[")) {
-      cookies = parseCookieJson(trimmed);
-    } else {
-      cookies = parseNetscapeCookies(trimmed);
-    }
-  } catch (err) {
-    console.error(`Error parsing cookies: ${(err as Error).message}`);
-    return;
-  }
-
-  if (cookies.length === 0) {
-    console.error("Error: No valid cookies found in input.");
-    return;
-  }
-
-  // Find earliest expiry
-  const earliestExpiry = getEarliestExpiry(cookies);
-
-  // Build credential payload (JSON with cookies + metadata)
-  const credentialPayload: import("./types.js").BrowserCookieCredential = {
-    cookies,
-    domain,
-    capturedAt: new Date().toISOString(),
-  };
-  const credentialJson = JSON.stringify(credentialPayload);
-
-  // Encrypt and store
-  await writeCredentialFile(vaultDir, tool, credentialJson, passphrase);
-  if (config.resolverMode === "binary") {
-    syncToSystemVault(vaultDir, tool);
-  }
-  console.log(`✓ Stored ${cookies.length} cookies for ${domain} (AES-256-GCM encrypted)`);
-  if (earliestExpiry) {
-    console.log(`✓ Expires: ${earliestExpiry} (earliest cookie expiry)`);
-  }
-
-  // Configure injection rule
-  const now = new Date().toISOString();
-  const toolConfig: ToolConfig = {
-    name: tool,
-    addedAt: now,
-    lastRotated: now,
-    inject: [
-      {
-        tool: "browser",
-        type: "browser-cookie",
-        method: "cookie-jar",
-        domainPin: [domain],
-      },
-    ],
-    scrub: { patterns: [] },
-  };
-
-  const updatedConfig = upsertTool(config, toolConfig);
-  writeConfig(vaultDir, updatedConfig);
-
-  const reloaded = signalGatewayReload();
-  if (reloaded) {
-    console.log("✓ Gateway reloaded (SIGUSR2) — no restart needed");
-  }
-
-  console.log(`\nTool "${tool}" is ready. Cookies will be injected on ${domain} navigation.`);
-}
-
-/**
- * Handle `vault add <tool> --type browser-password --domain <domain> --key <password>`.
- */
-async function handleBrowserPasswordAdd(tool: string, key?: string, domain?: string): Promise<void> {
-  if (!domain) {
-    console.error("Error: --domain is required for --type browser-password");
-    console.error("Usage: vault add <tool> --type browser-password --domain .example.com --key <password>");
-    return;
-  }
-  if (!key) {
-    console.error("Error: --key is required for --type browser-password");
-    console.error("Usage: vault add <tool> --type browser-password --domain .example.com --key <password>");
-    return;
-  }
-
-  const vaultDir = getVaultDir();
-  const config = readConfig(vaultDir);
-  const passphrase = getPassphrase(vaultDir);
-
-  // Encrypt and store
-  await writeCredentialFile(vaultDir, tool, key, passphrase);
-  if (config.resolverMode === "binary") {
-    syncToSystemVault(vaultDir, tool);
-  }
-  console.log(`✓ Credential stored: ${tool} (AES-256-GCM encrypted)`);
-
-  // Configure injection rule
-  const now = new Date().toISOString();
-  const toolConfig: ToolConfig = {
-    name: tool,
-    addedAt: now,
-    lastRotated: now,
-    inject: [
-      {
-        tool: "browser",
-        type: "browser-password",
-        method: "fill",
-        domainPin: [domain],
-      },
-    ],
-    scrub: { patterns: [] },
-  };
-
-  const updatedConfig = upsertTool(config, toolConfig);
-  writeConfig(vaultDir, updatedConfig);
-
-  const reloaded = signalGatewayReload();
-  if (reloaded) {
-    console.log("✓ Gateway reloaded (SIGUSR2) — no restart needed");
-  }
-
-  console.log(`\nℹ Note: Browser passwords are injected at runtime via domain pinning.`);
-  console.log(`  The vault does NOT create config files with plaintext credentials.`);
-  console.log(`  If the tool needs a config file, use environment variables instead.`);
-
-  console.log(`\nTool "${tool}" is ready. Password will be injected on ${domain} via browser fill.`);
 }
 
 /**
@@ -681,16 +530,6 @@ export function registerCliCommands(program: CliProgram): void {
       const nameError = validateToolName(tool);
       if (nameError) {
         console.error(`Error: ${nameError}`);
-        return;
-      }
-
-      // ── Legacy --type routing (kept for backward compat) ──
-      if (options.type === "browser-cookie") {
-        await handleBrowserCookieAdd(tool, options.domain);
-        return;
-      }
-      if (options.type === "browser-password") {
-        await handleBrowserPasswordAdd(tool, options.key, options.domain);
         return;
       }
 
