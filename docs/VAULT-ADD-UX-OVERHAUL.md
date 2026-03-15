@@ -157,8 +157,8 @@ interface UsageSelection {
     headerFormat: string;    // e.g., "Bearer $token" or "$token"
   };
   cliTool?: {
-    commandName?: string;    // e.g., "gh" — optional
-    commandMatch?: string;   // e.g., "*gumroad*" — fallback when no command name
+    commandName?: string;    // e.g., "gh" — UX shortcut, auto-generates commandMatch as "gh*"
+    commandMatch: string;    // e.g., "gh*", "*gumroad*" — glob pattern for matching exec commands
     envVar: string;          // e.g., "GUMROAD_TOKEN"
   };
   browserLogin?: {
