@@ -1,7 +1,7 @@
-# `vault add` UX Overhaul — Design Spec (Phases 2–4)
+# `vault add` UX Overhaul — Design Spec (Phases 2–5)
 
 _Branch: `fix/vault-add-ux-overhaul`_
-_Status: DRAFT — awaiting review_
+_Status: Addressing PR #2 review comments_
 _Phase 1 (bug fix) shipped in 1.0.0-beta.4_
 
 ---
@@ -14,43 +14,41 @@ _Phase 1 (bug fix) shipped in 1.0.0-beta.4_
 
 ### 1. Questions don't match how users think
 
-The flow asks:
-- *"CLI tool name?"* — irrelevant for browser-based services
-- *"Command pattern to match?"* — implementation detail the user doesn't understand
-- *"Environment variable name?"* — another implementation detail
+Users think: *"I have a Gumroad password. I want my agent to log into Gumroad."*
+The flow asks: *"CLI tool name? Command pattern? Environment variable name?"*
 
-Users think: *"I have a Gumroad password. I want my agent to use it."* They don't think in env vars and glob patterns.
+### 2. Password defaults to exec-env — wrong for browser logins
 
-### 2. No scrub pattern configuration
+Most passwords are for website login, not CLI tools. But the flow doesn't offer browser-password as an option — it defaults to exec injection, which doesn't help with browser-based login at all.
 
-The flow never mentions scrubbing. Known-prefix credentials get auto-scrub patterns from templates. Everything else gets nothing — the user doesn't know their password could leak into agent output.
+### 3. Browser types exist but are hidden
 
-### 3. Format ≠ Usage
+`--type browser-password` and `--type browser-cookie` work fully (domain pinning, `$vault:` resolution, cookie injection). But they're only accessible via explicit flags. The interactive flow never mentions them.
 
-The guesser detects *what the credential looks like* (JWT, password, API key) and uses that to decide *how it's injected*. But:
-- A JWT can be a Bearer token, a custom header (`x-resy-auth-token`), a cookie, or an env var
-- A password can be for browser login, CLI auth, or an API secret
-- A "generic API key" can be a header, env var, or query parameter
+### 4. No scrub pattern configuration or explanation
 
-Format detection should inform the *default suggestion*, not the *final decision*.
+The flow never mentions scrubbing. Users don't know if their credential will be caught in output. Literal scrubbing happens automatically (in-memory, at injection time — never stored in tools.yaml), but the user isn't told.
 
-### 4. Three different question paths
+### 5. Format ≠ Usage
 
-Depending on Y/edit/needsPrompt, you get different questions. Some paths create rules, some don't. Unpredictable.
-
-### 5. No final summary
-
-The user never sees a confirmation of exactly what was configured before it's written. If something is wrong, the only way to know is `vault show` after the fact.
+JWT → assumes Bearer. But JWTs are used as custom headers, cookies, env vars. The guesser should suggest, the user should decide.
 
 ---
 
-## How Users Think About Adding Credentials
+## How Each Injection Type Actually Works
 
-1. *"I have a credential"* — they know what it is
-2. *"I want my agent to use it for service X"* — they know the service
-3. *"Make it work"* — they don't care about injection mechanics
+Important context for the design — each usage type has a different injection mechanism:
 
-The new flow follows this mental model.
+| Usage Type | Injection Mechanism | How It Works |
+|-----------|---------------------|--------------|
+| API calls | `params.headers` | HTTP headers added to web_fetch requests |
+| CLI tool | `params.env` | Environment variables passed to subprocess spawn + Perl stdout scrubber |
+| Browser login | `$vault:` in `params.text` | Placeholder resolved to real password; domain-pinned; blocked if wrong domain |
+| Browser session | `params._vaultCookies` | Cookie array injected on browser navigate actions |
+
+These are all separate code paths in `before_tool_call`. The new [VAULT:gmail-app]ces to the correct mechanism automatically.
+
+**Critical: Literal scrubbing architecture.** The actual credential value is NEVER stored in tools.yaml or any config file. tools.yaml only stores regex patterns (like `ghp_[a-zA-Z0-9]{36}`). Literal scrubbing works from an in-memory cache: when a credential is decrypted for injection, the value is cached in `credentialCache` and used for literal string matching in `after_tool_call`. The Perl scrubber uses the value base64-encoded. No plaintext credential in any stored config.
 
 ---
 
@@ -65,34 +63,31 @@ $ openclaw vault add gumroad --key "my-secret-password"
   Detected: password (short string)
 ```
 
-Always encrypt first. Detection is informational — tells the user what we see, doesn't drive the flow.
+Always encrypt first. Detection is informational.
 
 ### Step 2: Usage selection
 
 ```
 How will your agent use this credential?
 
-  1. API calls     — HTTP requests to a web service
-  2. CLI tool      — command-line programs (gh, aws, curl)
-  3. Browser login — fill a password on a website
+  1. API calls      — HTTP requests to a web service
+  2. CLI tool       — command-line programs (gh, aws, curl)
+  3. Browser login  — fill a password on a website
   4. Browser session — use cookies from a logged-in session
 
 Choose one or more (comma-separated) [3]: 
 ```
 
-The default is pre-selected based on format detection:
+Default pre-selected based on format:
 - Password → default 3 (browser login)
 - JWT → default 1 (API calls)
 - JSON blob → default 4 (browser session)
-- Generic API key → default 2 (CLI tool)
-- Known prefix → skip entirely (auto-configured)
+- Generic API key → default 1 (API calls)
+- Known prefix → skip entirely (auto-configured from template)
+- Known tool name → skip if template exists (e.g., `vault add resy` matches `resy` template)
 - Unknown → no default
 
-Note: "Script/automation" is merged into "CLI tool" — both create exec rules, just with different follow-up questions. If the user picks CLI and doesn't have a specific command name, the flow falls back to a general env var + pattern.
-
 ### Step 3: Usage-specific follow-ups
-
-Each selection has 2-3 targeted questions:
 
 **API calls (1):**
 ```
@@ -100,31 +95,27 @@ Each selection has 2-3 targeted questions:
   Header name [Authorization]: 
   Value format [Bearer <token>]: 
 ```
-
-Defaults: `Authorization` header, `Bearer <token>` format. User overrides for custom headers.
+Defaults to `Authorization: Bearer`. User overrides for custom headers.
 
 **CLI tool (2):**
 ```
-  CLI command name (or press Enter for general scripts): gumroad-cli
+  CLI command name (or Enter for general scripts): gumroad-cli
   Environment variable [GUMROAD_API_KEY]: GUMROAD_TOKEN
 ```
-
-If no command name given, asks for a general command pattern (`*gumroad*`).
+If no command name, asks for a command pattern.
 
 **Browser login (3):**
 ```
   Website domain: .gumroad.com
 ```
-
-One question. Domain pinning configured automatically.
+One question. Domain pinning configured automatically. Agent uses `$vault:gumroad` in bro[VAULT:gmail-app]ms.
 
 **Browser session (4):**
 ```
   Cookie domain: .gumroad.com
-  Paste cookies (JSON or Netscape format, Ctrl+D when done):
+  Path to cookies file (JSON or Netscape format): /path/to/cookies.json
 ```
-
-Existing cookie flow, integrated into the new menu.
+Accepts a file path instead of pasting. Simpler and doesn't require users to know Ctrl+D.
 
 ### Step 4: Scrubbing
 
@@ -132,11 +123,12 @@ Existing cookie flow, integrated into the new menu.
 Output scrubbing (protects against credential leakage):
   ✓ Literal match: always active — your exact credential value will be
     redacted from all agent output, messages, and transcripts.
+    (Stored in memory only — never written to config files.)
   
   Add a regex pattern to also catch similar credentials? [N/y]:
 ```
 
-Literal scrubbing is always on and the user is told. Regex is optional and explained.
+Literal scrubbing is always on and the user is told. The parenthetical clarifies that the actual value never touches tools.yaml. Regex is optional.
 
 ### Step 5: Summary + confirm
 
@@ -149,15 +141,13 @@ Summary for "gumroad":
 Save? [Y/n]:
 ```
 
-User sees exactly what was configured. If wrong, they can say no and redo.
-
 ---
 
 ## Implementation Details
 
 ### New `buildToolConfig` function
 
-Replaces `buildToolConfigFromGuess`. Takes structured `UsageSelection` input, creates rules from scratch. No "find and modify" pattern.
+Replaces `buildToolConfigFromGuess` entirely (no backward compat needed — early beta, clean break). Takes structured `UsageSelection` input, creates rules from scratch.
 
 ```typescript
 interface UsageSelection {
@@ -168,7 +158,7 @@ interface UsageSelection {
   };
   cliTool?: {
     commandName?: string;    // e.g., "gh" — optional
-    commandMatch?: string;   // e.g., "*gumroad*" — used when no specific command
+    commandMatch?: string;   // e.g., "*gumroad*" — fallback when no command name
     envVar: string;          // e.g., "GUMROAD_TOKEN"
   };
   browserLogin?: {
@@ -176,42 +166,48 @@ interface UsageSelection {
   };
   browserSession?: {
     domain: string;
-    cookies: PlaywrightCookie[];
+    cookieFilePath: string;  // path to JSON/Netscape cookie file
   };
   scrubPatterns: string[];   // user-provided regex patterns (can be empty)
 }
+
+function buildToolConfig(
+  toolName: string,
+  usage: UsageSelection
+): { inject: InjectionRule[]; scrub: ScrubConfig }
 ```
 
-Each usage type maps to exactly one `InjectionRule`. The function always produces correct, complete output.
+Each usage type maps to exactly one `InjectionRule`. No find-and-modify. No empty-array bugs.
 
 ### Guesser changes
 
-The guesser's return type gets a new field:
+For non-known-prefix formats, the guesser stops generating `suggestedInject`. It only:
+1. Detects the format (JWT, password, API key, etc.)
+2. Suggests a default usage type number
+3. Generates suggested scrub patterns (for known formats)
 
-```typescript
-interface GuessResult {
-  // ... existing fields ...
-  suggestedUsage: number[];  // which usage types to pre-select (1-4)
-}
-```
+Known-prefix and known-name-template matches still auto-configure everything.
 
-The guesser no longer generates `suggestedInject` for non-known-prefix formats. It just says "this looks like a JWT, suggest API calls" and the new flow takes it from there.
+### CLI flow refactor
 
-Known-prefix formats still generate full `suggestedInject` + `suggestedScrub` and skip the flow entirely — that path is not changing.
-
-### CLI prompt refactor
-
-The current tangle of `if (confirmLower === "edit")` / `if (guess.needsPrompt)` / `if (guess.confidence === "low")` branches is replaced with a single linear flow:
+The current tangle of `if (confirmLower === "edit")` / `if (guess.needsPrompt)` branches is replaced with one linear flow:
 
 1. Detect format
 2. Show detection result
-3. Show usage menu with pre-selected default
+3. Show usage menu
 4. Collect usage-specific answers
 5. Ask about scrub patterns
 6. Show summary
 7. Confirm and write
 
-One path. Same questions every time (except the follow-ups vary by usage type). Predictable.
+One path. Predictable. No branching.
+
+### Old code removed
+
+- `buildToolConfigFromGuess` — deleted, replaced by `buildToolConfig`
+- `--type browser-password` / `--type browser-cookie` flags — removed, replaced by `--use browser-login` / `--use browser-session`
+- Edit/Y/needsPrompt branching — removed, replaced by linear flow
+- All prompt hint logic in guesser — simplified to just `suggestedUsage`
 
 ---
 
@@ -220,79 +216,76 @@ One path. Same questions every time (except the follow-ups vary by usage type). 
 ```bash
 # API calls with custom header
 openclaw vault add resy --key "eyJ..." \
-  --use api --header x-resy-auth-token --no-bearer --url "*api.resy.com/*"
+  --use api --header x-resy-auth-token --no-bearer --url "*api.resy.com/*" --yes
 
 # CLI tool
 openclaw vault add github --key "ghp_..." \
-  --use cli --command gh --env GH_TOKEN
+  --use cli --command gh --env GH_TOKEN --yes
 
 # Browser login
 openclaw vault add amazon --key "p@ssw0rd" \
-  --use browser-login --domain .amazon.com
+  --use browser-login --domain .amazon.com --yes
 
 # Multiple usages
 openclaw vault add myservice --key "abc123" \
-  --use api,cli --url "*api.myservice.com/*" --command myctl --env MYSERVICE_TOKEN
+  --use api,cli --url "*api.myservice.com/*" --command myctl --env MYSERVICE_TOKEN --yes
 
-# Auto-detect (known prefix)
+# Auto-detect (known prefix — only case where --yes works alone)
 openclaw vault add stripe --key "sk_live_..." --yes
 ```
 
 | Flag | Usage type | Description |
 |------|-----------|-------------|
 | `--use <types>` | All | Comma-separated: `api`, `cli`, `browser-login`, `browser-session` |
-| `--url <pattern>` | API | URL match pattern for header injection |
-| `--header <name>` | API | Custom header name (default: `Authorization`) |
-| `--no-bearer` | API | Don't prepend "Bearer " to value |
-| `--command <name>` | CLI | CLI command name for command matching |
-| `--env <name>` | CLI | Environment variable name |
-| `--domain <domain>` | Browser | Domain for login or cookie pinning |
+| `--url <pattern>` | api | URL match pattern for header injection |
+| `--header <name>` | api | Custom header name (default: `Authorization`) |
+| `--no-bearer` | api | Don't prepend "Bearer " to value |
+| `--command <name>` | cli | CLI command name for command matching |
+| `--env <name>` | cli | Environment variable name |
+| `--domain <domain>` | browser-login, browser-session | Domain for login or cookie pinning |
+| `--cookie-file <path>` | browser-session | Path to cookie file (JSON or Netscape) |
 | `--scrub-pattern <regex>` | All | Add a regex scrub pattern |
 
-When `--use` is provided, all required flags for that usage type must also be provided. Missing required flags → error with clear message.
+**`--yes` rules:**
+- Known-prefix credential → works alone (auto-configured)
+- Known-name template match → works alone (auto-configured)
+- Everything else → requires `--use` with all required flags for that usage type
+- If `--yes` used without sufficient info: `Error: --yes requires either a known credential format or --use with all required flags.`
 
----
-
-## Backward Compatibility
-
-- `--type browser-password` and `--type browser-cookie` still work — they bypass the new flow
-- `--yes` still auto-accepts for known-prefix credentials
-- `tools.yaml` format unchanged — same `InjectionRule` structures
-- Old `buildToolConfigFromGuess` kept as internal fallback for `--yes` mode with non-known formats
-- Existing stored credentials are not affected
+No guessing. No defaults. `--yes` is strictly a convenience for script automation where all info is explicitly provided.
 
 ---
 
 ## Implementation Plan
 
-### Phase 2: New interactive flow
-1. New `UsageSelection` type and `buildToolConfig` function
-2. Usage-type menu with format-based defaults
+### Phase 2: New interactive flow (with unit tests)
+1. New `UsageSelection` type and `buildToolConfig` function + unit tests
+2. Usage-[VAULT:gmail-app]at-based defaults + unit tests for default selection
 3. Usage-specific follow-up prompts (API, CLI, browser-login, browser-session)
-4. Custom header support (header name + format)
+4. Custom header support (header name + format) + unit tests
 5. Scrub pattern prompt with literal match explanation
 6. Summary display before confirmation
-7. Wire into `cli.ts`, replacing the current prompt branches
+7. Wire into `cli.ts`, remove old prompt branches and `buildToolConfigFromGuess`
 
-### Phase 3: CLI flags
-8. `--use` flag parsing and validation
-9. Per-usage-type flags (`--header`, `--url`, `--command`, `--env`, `--domain`, `--no-bearer`, `--scrub-pattern`)
-10. Flag validation: required flags per usage type, error messages
-11. Flag combinations for multi-usage (`--use api,cli`)
+### Phase 3: CLI flags (with unit tests)
+8. `--use` flag parsing and validation + unit tests
+9. Per-usage-type flags + unit tests for flag validation
+10. Flag combinations for multi-usage (`--use api,cli`) + unit tests
+11. `--yes` strict validation + unit tests
+12. Known-name template matching (e.g., `vault add resy` auto-configures from registry)
 
-### Phase 4: Tests + docs
-12. Unit tests for `buildToolConfig` — one test per usage type, one per combination
+### Phase 4: Integration tests + docs
 13. Integration tests: interactive flow simulation (mock stdin)
 14. Integration tests: non-interactive flag mode
-15. Edge case tests: missing flags, invalid combinations, backward compat
+15. Edge case tests: missing flags, invalid combinations
 16. Update README commands table
 17. Update SPEC CLI reference
 18. Update TESTING.md with new test counts
 
----
-
-## Open Questions
-
-1. **Should `--yes` with non-known-prefix credentials use the guesser's suggested default?** Today `--yes` accepts whatever the guesser suggests (which may be wrong). With the new flow, `--yes` would accept the format-based default usage type and use auto-generated values for follow-up questions. This is better than today but still potentially wrong. Alternative: require `--use` when `--yes` is used with non-known formats.
-
-2. **Should the guesser try to match templates by tool name?** `vault add resy --key "eyJ..."` could auto-configure if a "resy" template exists in the registry. This is the browser credential UX spec's proposal — it layers on top of this overhaul.
+### Phase 5: Security audit
+19. Verify credential value never appears in tools.yaml or any config file
+20. Verify domain pinning works for browser-login and browser-session
+21. Verify scrubbing covers all injection paths (exec, web_fetch, browser)
+22. Verify `$vault:` placeholder resolution is domain-pinned
+23. Run full adversarial test suite against new flow
+24. Regression check: all 616+ existing tests still pass
