@@ -206,3 +206,6 @@ rl.on("line", (l) => {
 
 ## --use without --yes: prompt for missing fields?
 Currently `--use` without `--yes` still errors on missing fields instead of prompting. This makes `--yes` redundant for the `--use` path — if you have all the fields, it works with or without `--yes`. Consider: `--use` without `--yes` could prompt for missing sub-fields (e.g., `--use api` without `--url` → prompt for URL). `--yes` would then mean "don't prompt, error if incomplete." This would make `--use` a hybrid path: skip the menu but still get help filling in details.
+
+## commandMatch should support matching command name mid-string
+Currently `commandMatch` generated from `commandName` uses `<name>*` (prefix glob). This misses cases where the command appears mid-string (e.g., piped commands like `echo foo | gh auth status`, or full paths like `/usr/bin/gh`). Consider generating `*<name>*` or supporting multiple patterns.
