@@ -194,6 +194,34 @@ describe("vault add interactive flow", () => {
     expect(tool.scrub.patterns.length).toBeGreaterThan(0);
   });
 
+  it("interactive flow: selects option 4 (browser-session) with --key containing inline cookie JSON -> skips cookie prompt", async () => {
+    const inlineCookies = JSON.stringify([
+      { name: "sid", value: "test-cookie", domain: ".example.com", path: "/", expires: -1, httpOnly: true, secure: true, sameSite: "Lax" },
+    ]);
+
+    withPromptAnswers([
+      "4",               // choose browser session
+      ".example.com",    // cookie domain
+      // NO cookie prompt — --key should be used directly
+      "n",               // add custom scrub regex?
+      "y",               // save
+    ]);
+
+    const program = createMockProgram();
+    registerCliCommands(program as any);
+    const logs: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args) => logs.push(args.join(" ")));
+
+    await getAddAction(program)("browser-session-key", { key: inlineCookies });
+
+    const cfg = readConfig(tmpDir).tools["browser-session-key"];
+    expect(cfg).toBeDefined();
+    expect(cfg.inject[0].type).toBe("browser-cookie");
+    expect(cfg.inject[0].domainPin).toEqual([".example.com"]);
+    // Should warn about shell history since it was inline
+    expect(logs.join("\n")).toContain("shell history");
+  });
+
   it("interactive flow: answers N to save -> does not write config", async () => {
     withPromptAnswers([
       "1",
