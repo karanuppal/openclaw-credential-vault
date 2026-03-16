@@ -97,7 +97,8 @@ describe("vault add interactive flow", () => {
       "api.example.com",   // API domain
       "",                  // header -> default Authorization
       "",                  // format -> default Bearer $token
-      "n",                 // add scrub regex?
+      "n",                 // include detected scrub pattern? (generic-api-key has one)
+      "n",                 // add custom scrub regex?
       "y",                 // save
     ]);
 
@@ -134,7 +135,8 @@ describe("vault add interactive flow", () => {
       "2",
       "gh",
       "GITHUB_TOKEN",
-      "n",
+      "n",                 // include detected scrub pattern? (generic-api-key has one)
+      "n",                 // add custom scrub regex?
       "y",
     ]);
 
@@ -157,7 +159,8 @@ describe("vault add interactive flow", () => {
       "Bearer $token",
       "multi",
       "MULTI_TOKEN",
-      "n",
+      "n",                 // include detected scrub pattern? (generic-api-key has one)
+      "n",                 // add custom scrub regex?
       "y",
     ]);
 
@@ -170,14 +173,36 @@ describe("vault add interactive flow", () => {
     expect(inject.some((r) => r.tool === "exec")).toBe(true);
   });
 
+  it("interactive flow: accepts detected scrub pattern from guesser -> adds to scrub config", async () => {
+    withPromptAnswers([
+      "1",                 // choose usage
+      "api.example.com",   // API domain
+      "",                  // header -> default Authorization
+      "",                  // format -> default Bearer $token
+      "y",                 // include detected scrub pattern? (accept)
+      "n",                 // add custom scrub regex?
+      "y",                 // save
+    ]);
+
+    const program = createMockProgram();
+    registerCliCommands(program as any);
+    await getAddAction(program)("scrub-accepted", { key: "A".repeat(40) });
+
+    const tool = readConfig(tmpDir).tools["scrub-accepted"];
+    expect(tool).toBeDefined();
+    // The guesser-suggested pattern should be included
+    expect(tool.scrub.patterns.length).toBeGreaterThan(0);
+  });
+
   it("interactive flow: answers N to save -> does not write config", async () => {
     withPromptAnswers([
       "1",
       "api.nosave.com",
       "",
       "",
-      "n",
-      "n",
+      "n",                 // include detected scrub pattern? (generic-api-key has one)
+      "n",                 // add custom scrub regex?
+      "n",                 // save
     ]);
 
     const program = createMockProgram();

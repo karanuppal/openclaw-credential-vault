@@ -813,11 +813,22 @@ export function registerCliCommands(program: CliProgram): void {
       console.log("    redacted from all agent output, messages, and transcripts.");
       console.log("    (Stored in memory only — never written to config files.)");
       console.log("");
+
+      // Offer suggested scrub patterns from format guesser
+      if (guess.suggestedScrub.patterns.length > 0) {
+        for (const pattern of guess.suggestedScrub.patterns) {
+          const includeAnswer = await promptUser(`  Detected pattern: \`${pattern}\` — include? [Y/n]: `);
+          if (includeAnswer.toLowerCase() !== "n" && includeAnswer.toLowerCase() !== "no") {
+            usage.scrubPatterns.push(pattern);
+          }
+        }
+      }
+
       const addScrub = await promptUser("  Add a regex pattern to also catch similar credentials? [N/y]: ");
       if (addScrub.toLowerCase() === "y" || addScrub.toLowerCase() === "yes") {
         const pattern = await promptUser("  Regex pattern: ");
         if (pattern.trim()) {
-          usage.scrubPatterns = [pattern.trim()];
+          usage.scrubPatterns.push(pattern.trim());
         }
       }
       if (options.scrubPattern) {
