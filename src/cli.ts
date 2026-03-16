@@ -43,6 +43,7 @@ import {
 import {
   parseCookieJson,
   parseNetscapeCookies,
+  parseRawCookieString,
   getEarliestExpiry,
 } from "./browser.js";
 import { ToolConfig, CliProgram, PlaywrightCookie, UsageSelection, InjectionRule, ScrubConfig } from "./types.js";
@@ -299,7 +300,8 @@ async function handleVaultAddWithUse(
       if (type === "browser-session") {
         const hasCookieData =
           (options.key && (options.key.startsWith("[") || options.key.startsWith("{"))) ||
-          (options.key && fs.existsSync(options.key));
+          (options.key && fs.existsSync(options.key)) ||
+          (options.key && options.key.includes("="));
         if (!options.domain || !hasCookieData) {
           console.error("Error: --yes requires either a known credential format or --use with all required flags.");
           return;
@@ -329,6 +331,10 @@ async function handleVaultAddWithUse(
       // Inline cookie JSON provided via --key
       fileContent = options.key;
       cookieIsInline = true;
+    } else if (options.key && !fs.existsSync(options.key) && options.key.includes("=")) {
+      // Raw cookie string: "name=value" or "name=value; name2=value2"
+      fileContent = options.key;
+      cookieIsInline = true;
     } else if (options.key && fs.existsSync(options.key)) {
       // --key is a file path
       cookieSourcePath = options.key;
@@ -339,20 +345,22 @@ async function handleVaultAddWithUse(
         return;
       }
     } else {
-      console.error("Error: --key is required for --use browser-session (provide inline cookie JSON or a path to a cookie file)");
+      console.error("Error: --key is required for --use browser-session (provide cookie JSON, raw name=value string, or path to cookie file)");
       return;
     }
 
     let cookies: PlaywrightCookie[];
     try {
       const trimmed = fileContent.trim();
-      if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+      if (cookieIsInline && !trimmed.startsWith("[") && !trimmed.startsWith("{") && trimmed.includes("=")) {
+        cookies = parseRawCookieString(fileContent, options.domain!);
+      } else if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
         cookies = parseCookieJson(fileContent);
       } else {
         cookies = parseNetscapeCookies(fileContent);
       }
     } catch (err) {
-      console.error(`Error parsing cookie file: ${(err as Error).message}`);
+      console.error(`Error parsing cookie data: ${(err as Error).message}`);
       return;
     }
 
@@ -766,6 +774,7 @@ export function registerCliCommands(program: CliProgram): void {
           let cookieContent: string | null = null;
           let cookieFilePath: string | null = null;
           let cookieIsInline = false;
+          let cookieIsRaw = false;
 
           // Check if --key already contains cookie data (inline JSON or file path)
           if (options.key) {
@@ -780,6 +789,11 @@ export function registerCliCommands(program: CliProgram): void {
               } catch (err) {
                 console.log(`  Could not read file from --key: ${(err as Error).message}`);
               }
+            } else if (keyTrimmed.includes("=")) {
+              // Raw cookie string: "name=value" or "name=value; name2=value2"
+              cookieContent = keyTrimmed;
+              cookieIsInline = true;
+              cookieIsRaw = true;
             }
           }
 
@@ -819,7 +833,9 @@ export function registerCliCommands(program: CliProgram): void {
           let cookies: PlaywrightCookie[];
           try {
             const trimmed = cookieContent!.trim();
-            if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+            if (cookieIsRaw || (!trimmed.startsWith("[") && !trimmed.startsWith("{") && trimmed.includes("="))) {
+              cookies = parseRawCookieString(cookieContent!, domain);
+            } else if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
               cookies = parseCookieJson(cookieContent!);
             } else {
               cookies = parseNetscapeCookies(cookieContent!);
