@@ -1,572 +1,475 @@
 # Security Audit
 
 > Comprehensive security audit of the OpenClaw Credential Vault plugin.
-> Last updated: 2026-03-12 (post-remediation: params.env + Perl scrubber)
+> Last updated: 2026-03-16 (post vault-add UX overhaul + browser credential support)
 > Auditor: Automated security engineering review (agentic)
-> Scope: Full source code, injection path, scrubbing pipeline, tests, dependencies, Rust resolver
+> Scope: Full source code, injection path, scrubbing pipeline, browser credential flow, CLI add UX, tests, dependencies, Rust resolver
+> Branch: fix/vault-add-ux-overhaul (24 commits since main)
 
 ---
 
 ## Executive Summary
 
-The OpenClaw Credential Vault implements a well-designed defense-in-depth architecture for managing AI agent credentials. The codebase demonstrates strong cryptographic foundations (AES-256-GCM + Argon2id), comprehensive scrubbing across 5 hook points, and thoughtful handling of the unique threat surface created by LLM agents with tool access.
+The OpenClaw Credential Vault implements a defense-in-depth architecture for managing AI agent credentials. The codebase demonstrates strong cryptographic foundations (AES-256-GCM + Argon2id), comprehensive 4-hook scrubbing pipeline, and a well-designed browser credential injection system with domain pinning.
 
 **Overall Risk Rating: LOW**
 
-The vault is suitable for its stated purpose (beta release for credential management in AI agent frameworks). The primary residual risks are:
+The vault is suitable for its stated purpose (credential management in AI agent frameworks). The UX overhaul and browser credential support introduce no critical vulnerabilities. Key findings:
 
-1. ~~**process.env contamination during injection**~~ — **RESOLVED** (commit 630c7a5). Credentials now injected via `params.env` only. No `process.env` mutation.
-2. **Machine-key derivation uses low-entropy inputs** (hostname, uid, timestamp) — encryption alone is insufficient against a local attacker. Binary mode mitigates by adding OS-user file isolation, making encrypted files inaccessible regardless of key strength (Medium severity)
-3. **Fail-open scrubbing** — design choice with acceptable trade-offs but creates a real exposure window on scrubber bugs (Medium severity)
-4. ~~**No path traversal validation in Rust resolver**~~ — **RESOLVED** (commit 290cf09). Tool name validation rejects `/`, `\`, `..`, and leading `.`.
-5. **Mocked concurrent test coverage** — concurrent resolution tests don't exercise real crypto/IO paths (Low severity)
+1. **Tab URL cache poisoning via `content[0].text` JSON parsing** — an attacker-controlled tool result could inject a malicious URL into the cache (MEDIUM)
+2. **Debug logging leaks credential metadata to stderr** — `[vault-debug]` lines include cache keys, target IDs, URLs, and cache sizes unconditionally (MEDIUM)
+3. **`--yes` flag skips cookie file secure delete** — plaintext cookie files left on disk in non-interactive mode (MEDIUM)
+4. **Shell history exposure for `--key` inline credentials** — documented with warnings but no mitigation (LOW, accepted)
+5. **Cookie domain filtering is not bidirectional** — cookies with broader domains than the pin could be injected (LOW)
+6. **`browserTabUrls` cache has no size limit or TTL** — grows without bound (LOW)
 
-No critical vulnerabilities were found. All previously identified bugs (12 from the prior audit) remain fixed. The test suite is comprehensive at 610 tests across 30 files with dedicated adversarial, false-positive, sub-agent isolation, resolver versioning, and Perl scrubber coverage.
-
-### Post-Remediation Changes (2026-03-12)
-
-Major security improvements implemented and verified:
-- **params.env-only injection** — credentials no longer set on `process.env` or prepended to command strings
-- **Perl stdout scrubber** — subprocess output piped through `perl -pe` with base64-encoded credential replacement before exec captures it
-- **PTY mode verified safe** — pipe sits outside PTY boundary, scrubber works correctly (3 tests)
-- **30 Perl scrubber tests** — basic, exfiltration, exit codes, multi-credential, PTY, system compat
+No CRITICAL findings. All previously resolved findings (F-1, F-2, F-8, F-10) remain fixed. Test suite comprehensive at 695 tests across 36 files.
 
 ---
 
-## Threat Coverage Matrix
+## 1. Credential Flow Analysis
 
-Assessment of each threat vector from THREAT-MODEL.md against actual code defenses and test coverage.
+### Flow 1: Exec/Web_Fetch Injection (Existing)
 
-### Threat 1: Agent Context Exfiltration
+```
+vault.enc → Argon2id KDF → AES-256-GCM decrypt → credentialCache (15min TTL)
+  → params.env (exec) or params.headers (web_fetch)
+  → Perl stdout scrubber (base64-encoded replacement)
+  → after_tool_call (audit only) → tool_result_persist (scrub) → before_message_write (scrub) → message_sending (scrub)
+```
 
-**Threat:** Prompt injection instructs agent to send credentials to an attacker-controlled endpoint.
+**Finding: No leakage paths identified.** Credentials never touch `process.env`. The Perl scrubber catches stdout/stderr before the gateway captures output. All 4 post-execution hooks scrub independently.
 
-**Code Defenses:**
-- `src/index.ts` `handleBeforeToolCall()` (lines 178-443): Credentials injected into subprocess `params.env`, not returned as visible text to the agent
-- `src/scrubber.ts` `scrubText()`: 3-layer scrubbing pipeline (regex → literal → env-var) catches credentials in all output
-- `src/browser.ts` `resolveBrowserPassword()`: Domain pinning blocks credential resolution on non-matching domains
-- `src/index.ts`: Scrubbing hooks at priority 1 across `after_tool_call`, `tool_result_persist`, `before_message_write`, `message_sending`
+### Flow 2: Browser Password Injection (New)
 
-**Test Coverage:**
-- `tests/adversarial.test.ts`: 56 tests covering 7 attack vectors including domain spoofing, encoded leakage, split credentials
-- `tests/e2e.test.ts`: Full injection → scrubbing round-trip tests
-- `tests/browser.test.ts`: Domain pinning bypass attempts (IDN homograph, subdomain spoof, data: URLs, javascript: URLs)
+```
+vault.enc → decrypt → credentialCache
+  → LLM sends browser action with $vault:name placeholder
+  → before_tool_call: extract vaultName from params.text
+  → domain pin check against current URL (params.url || params.targetUrl || browserTabUrls cache)
+  → if match: replace $vault:name with actual credential in params.text
+  → browser tool executes (types credential into field)
+  → after_tool_call: cache tab URL from result
+  → tool_result_persist + before_message_write + message_sending: scrub credential from any output
+```
 
-**Rating: ✅ Well Covered**
+**Finding: Flow is sound.** The `$vault:` placeholder mechanism means the LLM never sees the actual credential value — it only knows the placeholder. The credential is injected at priority 10 (last) and scrubbed at priority 1 (first).
 
-Specific strengths: Multi-hook redundancy (same credential caught at up to 4 separate points), domain pinning for browser credentials, priority-based hook ordering.
+**Risk: The credential IS passed to the browser tool as plaintext in `params.text`.** If any other plugin hooks `before_tool_call` at priority < 10, it would see the pre-injection placeholder (safe). If a plugin hooks at priority > 10, it would see the injected credential. This is documented behavior and the priority split is tested.
 
----
+### Flow 3: Browser Cookie Injection (New)
 
-### Threat 2: Transcript Leakage
+```
+vault.enc → decrypt → credentialCache → JSON.parse → PlaywrightCookie[]
+  → before_tool_call: on navigate action, check URL against all cookie rule domainPins
+  → if match: filter cookies by domain, remove expired → params._vaultCookies
+  → browser tool injects via addCookies()
+  → Cookies are HTTP-only, not visible in page JS
+```
 
-**Threat:** Credentials persist in session transcript files on disk.
+**Finding: Flow is sound.** Cookies are domain-filtered before injection. The `_vaultCookies` param is a private convention between the vault plugin and the browser tool.
 
-**Code Defenses:**
-- `src/index.ts` `handleToolResultPersist()` (lines 494-532): Scrubs tool results before transcript write
-- `src/index.ts` `handleBeforeMessageWrite()` (lines 546-588): Scrubs all messages before transcript write
-- Priority 1 ensures scrubbing runs before any other plugin writes to transcript
-- `src/index.ts` `handleMessageSending()` (lines 596-618): Final scrub before outbound delivery
+### Flow 4: Write/Edit Scrubbing
 
-**Test Coverage:**
-- `tests/hooks.test.ts`: Verifies scrubbing at before_message_write and tool_result_persist hooks
-- `tests/compaction-scrub.test.ts`: 12 tests verifying compacted content is scrubbed before re-entry to transcript
-- `tests/e2e.test.ts`: E2E verification of scrubbing pipeline
+```
+before_tool_call: intercept write/edit tools → scrub content/newText/new_string
+  → regex patterns + literal cached credentials
+```
 
-**Rating: ✅ Well Covered**
-
----
-
-### Threat 3: Plugin-to-Plugin Leaks
-
-**Threat:** Another plugin sees credentials in params or results via shared hooks.
-
-**Code Defenses:**
-- `src/index.ts` line 668: Injection at priority 10 (runs last — other plugins see pre-injection params)
-- `src/index.ts` lines 671-674: Scrubbing at priority 1 (runs first — other plugins see scrubbed results)
-- Split-priority design documented in `register()` function
-
-**Test Coverage:**
-- `tests/hooks.test.ts` "Hook priority validation": Contract test verifying SCRUB_PRIORITY < INJECT_PRIORITY
-- No integration test with actual mock plugins to verify priority isolation end-to-end
-
-**Rating: ⚠️ Partially Covered**
-
-Gap: Priority-based isolation is verified as a design contract but never tested with actual concurrent plugins. The test validates `1 < 10` arithmetically but doesn't exercise the OpenClaw hook dispatch order with competing plugins.
+**Finding: Complete.** Both array and string content paths are handled.
 
 ---
 
-### Threat 4: Sub-Agent Isolation
+## 2. Browser Credential Security
 
-**Threat:** Sub-agents spawned by the main agent bypass scrubbing.
+### 2A. Domain Pin Enforcement
 
-**Code Defenses:**
-- Hooks fire at gateway level for all sessions, including sub-agents (architectural property of OpenClaw, not vault-specific code)
-- Scrubbing uses the same `scrubText()` pipeline regardless of session type
+**Implementation** (`src/browser.ts` lines 32-55): Two modes — leading dot for subdomain wildcard (`.amazon.com` matches `amazon.com` and `*.amazon.com`), exact match otherwise.
 
-**Test Coverage:**
-- `tests/subagent-isolation.test.ts`: 8 tests verifying identical scrubbing behavior for main and sub-agent sessions
-- Tests simulate concurrent sub-agent sessions with different credentials
+**Bypass Attempts Reviewed:**
+- **IDN homograph**: `new URL()` normalizes punycode, so `аmazon.com` (Cyrillic а) becomes `xn--mazon-wfb.com` — does NOT match `.amazon.com` ✅
+- **Port injection**: `evil.com:443@amazon.com` → `URL.hostname` returns `evil.com` ✅
+- **Path confusion**: `amazon.com.evil.com` → does NOT match `.amazon.com` because `endsWith(".amazon.com")` fails ✅
+- **data:/javascript: URLs**: `extractHostname()` returns null for these (no hostname) → resolution fails → credential blocked ✅
+- **Empty URL**: Returns null → "Cannot resolve domain from URL" error → blocked ✅
+- **Case sensitivity**: Both hostname and pin are lowercased before comparison ✅
 
-**Rating: ⚠️ Partially Covered**
+**Verdict: Domain pinning is robust.** No bypass found.
 
-Gap: Tests simulate the hook dispatch behavior but don't actually exercise the OpenClaw gateway's session routing. The tests call `scrubText()` directly and assert identical results, which is correct but doesn't prove that the gateway actually routes sub-agent tool calls through the same hooks. This is an architectural assumption that should be integration-tested with the actual gateway.
+### 2B. Tab URL Cache Poisoning — MEDIUM (F-NEW-1)
 
----
+**Severity: MEDIUM**
+**Location:** `src/index.ts` lines 636-662 (`handleAfterToolCall`)
 
-### Threat 5: Credential Persistence in Memory Files
+The `browserTabUrls` cache is populated from two sources:
+1. `navigate`/`open` actions in `before_tool_call` (line 482) — uses `params.url`, which is the URL the agent requested → **trusted**
+2. `after_tool_call` result parsing (lines 636-662) — parses from `event.result` → **partially trusted**
 
-**Threat:** Agent writes credentials to workspace files via write/edit tools.
+The `after_tool_call` handler attempts to extract URLs from the tool result:
+```typescript
+// Also try parsing from content[0].text as fallback
+if (!details.url && Array.isArray(res.content)) {
+  const firstContent = res.content[0] as Record<string, unknown> | undefined;
+  if (firstContent && typeof firstContent.text === "string") {
+    try { parsed = JSON.parse(firstContent.text as string); } catch { /* ignore */ }
+  }
+}
+```
 
-**Code Defenses:**
-- `src/index.ts` `handleBeforeToolCall()` (lines 229-239): Intercepts `write` and `edit` tool calls, scrubs `content`, `newText`, `new_string` params
-- `src/index.ts` `scrubWriteEditContent()` (lines 205-226): Dedicated function for write/edit scrubbing
-- Both regex patterns and literal cached credentials are scrubbed from file content
+**Attack scenario:**
+1. A malicious tool result (e.g., from a compromised browser page or injected content) returns JSON in `content[0].text` with `{"url": "https://evil.com", "targetId": "existing-tab-id"}`
+2. This overwrites the cached URL for an existing tab
+3. On the next `$vault:` password fill, the domain pin checks against `evil.com` — correctly blocks the credential
 
-**Test Coverage:**
-- `tests/write-edit-scrub.test.ts`: 13 tests for write content, edit newText, edit new_string, JSON content, YAML content, edge cases
-- `tests/adversarial.test.ts` "Attack Vector 5": Write/edit bypass attempts including heredoc, JSON escapes, base64
+**Mitigating factor:** Even if the cache is poisoned with a wrong URL, the domain pin check STILL runs. The worst case is:
+- A legitimate tab's cached URL is overwritten with a wrong domain → credential injection is incorrectly blocked (denial of service, not credential leak)
+- The cache is overwritten with an attacker's domain → the pin check blocks because the attacker's domain doesn't match
 
-**Rating: ✅ Well Covered**
+**The cache cannot WEAKEN the pin check — it can only provide an alternative URL when `params.url` is absent.** The pin always validates the URL regardless of source.
 
----
-
-### Threat 6: Environment Variable Exposure
-
-**Threat:** Credentials injected as env vars persist in gateway's process.env.
-
-**Code Defenses (updated 2026-03-12):**
-- Credentials injected ONLY via `params.env` — no `process.env` mutation
-- Perl stdout scrubber pipes subprocess output through credential replacement
-- `src/scrubber.ts` `scrubEnvVars()`: ENV_VAR_PATTERN catches `KEY=[VAULT:env-redacted] patterns in output
-
-**Status:** RESOLVED — process.env contamination eliminated entirely.
-
-**Test Coverage:**
-- `tests/adversarial.test.ts` "Attack Vector 4": Env variable scrubbing bypass tests
-- No test verifying the process.env injection/cleanup lifecycle
-
-**Rating: ⚠️ Partially Covered**
-
-**NEW FINDING — process.env contamination (see New Findings F-1 below)**
-
----
-
-### Threat 7: Output Pattern Leakage
-
-**Threat:** Tool output contains credential-like strings (e.g., `set -x` echo, API responses with auth tokens).
-
-**Code Defenses:**
-- `src/scrubber.ts`: 3-layer pipeline — regex patterns, literal indexOf matching, env-var name matching
-- `src/scrubber.ts` `GLOBAL_SCRUB_PATTERNS`: Telegram bot tokens and Slack bot tokens scrubbed regardless of vault registration
-- `src/registry.ts`: 7 known tool patterns (Stripe, GitHub, Gumroad, OpenAI, Anthropic, Amazon, Netflix)
-
-**Test Coverage:**
-- `tests/adversarial.test.ts`: Encoded leakage (base64, URL-encode, hex, ROT13, reversed — all documented as known gaps)
-- `tests/false-positives.test.ts`: 11 tests ensuring UUIDs, git hashes, CSS colors, base64 data URIs are NOT over-scrubbed
-- `tests/adversarial.test.ts`: Concurrent scrubbing, massive output, pathological regex input
-
-**Rating: ✅ Well Covered**
-
-Known gaps (all documented in adversarial tests): base64-encoded, URL-encoded, hex-encoded, ROT13, reversed, split-across-calls, zero-width-character-injected credentials bypass scrubbing. These are acknowledged limitations of pattern-based scrubbing.
-
----
-
-### Threat 8 (Implicit): Credential File Direct Read
-
-**Threat:** Agent reads encrypted files directly via `cat ~/.openclaw/vault/*.enc`.
-
-**Code Defenses:**
-- `src/crypto.ts`: AES-256-GCM encryption — files are binary ciphertext, not usable without key derivation
-- `bin/vault-setup.sh`: In binary mode, files owned by `openclaw-vault` user with mode 600 — agent gets `Permission denied`
-- `src/crypto.ts` `writeCredentialFile()`: Atomic write with 0o600 permissions
-
-**Test Coverage:**
-- `tests/crypto.test.ts`: 19 tests for encryption round-trip, wrong passphrase, tampered ciphertext, file permissions
-
-**Rating: ✅ Well Covered**
-
----
-
-## New Findings
-
-### F-1: process.env Contamination During Injection (Medium) — RESOLVED
-
-**Severity: Medium → RESOLVED (commit 630c7a5)**
-**Location:** `src/index.ts`, env injection block
-
-**Original issue:** During credential injection, the vault set credentials on `process.env` and prepended `export KEY=[VAULT:env-redacted] && command` to the command string. This contaminated the gateway process environment and exposed credentials in the command string.
-
-**Resolution:** Credentials are now injected ONLY via `params.env` (passed directly to the subprocess spawn). No `process.env` mutation, no command string prepend. A Perl stdout scrubber pipes subprocess output through credential value replacement before exec captures it. Credentials are base64-encoded in the perl command, never appearing in plaintext in the command string.
-
-**Recommendation:** No further action needed — fully resolved.
-
-**Test Gap:** No test verifies that `process.env` is clean during/after injection.
-
----
-
-### F-2: No Path Traversal Validation in Rust Resolver (Medium) — RESOLVED
-
-**Severity: Medium → RESOLVED (commit 290cf09)**
-**Location:** `resolver/src/main.rs`, tool name validation before path construction
-
-**Original issue:** The Rust resolver accepted arbitrary tool names and constructed file paths without validation, allowing path traversal via `../../etc/shadow`.
-
-**Resolution:** Tool name validation added in `main.rs` before any path construction. Rejects names containing `/`, `\`, `..`, or starting with `.`. This applies to all actions (resolve, sync, remove, sync-meta).
-- This is defense-in-depth — the setuid binary should not trust its input
-
----
-
-### F-3: Credential Cache Has No Maximum Size (Low)
-
-**Severity: Low**
-**Location:** `src/index.ts`, `VaultState.credentialCache` (line 69)
-
-The `credentialCache` Map grows without bound. Entries are evicted only when accessed after TTL expiry. There is no maximum cache size, no periodic sweep, and no cache clearing on SIGUSR2 reload (the cache is intentionally preserved across reloads if the passphrase hasn't changed — line 685).
-
-**Impact:** All decrypted credential values persist in process memory for 15 minutes. In a system with many tools, this increases the attack surface for memory-based credential extraction.
+**Residual risk:** If an attacker can both (a) poison the cache with a domain that matches the pin AND (b) control the page the browser navigates to, they could cause the credential to be typed into a lookalike page. This requires the attacker to control a subdomain of the pinned domain, which is an edge case.
 
 **Recommendation:**
-- Add a maximum cache size (e.g., 100 entries)
-- Consider a periodic sweep (e.g., every 5 minutes) to evict expired entries proactively
-- On `vault remove`, evict the corresponding cache entry (currently not done)
+- Only cache URLs from `navigate`/`open` actions (trusted user-initiated navigation), not from result parsing
+- Alternatively, validate that `result.url` matches the originally requested `params.url` before caching
+
+### 2C. Cookie Injection Scope — LOW (F-NEW-2)
+
+**Severity: LOW**
+**Location:** `src/browser.ts` `filterCookiesByDomain()` (lines 140-154)
+
+The domain filtering checks that the cookie's domain is a match or subdomain of the pin domain. However, the check is unidirectional:
+
+```typescript
+return (
+  cookieDomain === pinDomain || cookieDomain.endsWith("." + pinDomain)
+);
+```
+
+This means a cookie with domain `.com` would NOT match a pin of `.amazon.com` (correct). But a cookie with domain `.amazon.com` WOULD match a pin of `.amazon.com` (correct). A cookie with domain `.sub.amazon.com` WOULD also match (correct).
+
+**Finding:** The filtering is correct. Cookies can only be injected to domains that are equal to or subdomains of the pin domain. The browser itself enforces cookie domain scoping independently as a second layer.
+
+**Minor concern:** If the stored cookie JSON contains cookies for unrelated domains (e.g., tracking cookies from a browser export), `filterCookiesByDomain` correctly excludes them. The `filterTrackingCookies` function exists but is not called in the injection path — only available for CLI use during import.
+
+**Recommendation:** Consider calling `filterTrackingCookies` in the injection path as defense-in-depth.
+
+### 2D. Result Parsing in after_tool_call — LOW (F-NEW-3)
+
+**Severity: LOW**
+**Location:** `src/index.ts` lines 646-651
+
+Parsing `content[0].text` as JSON has minimal direct risk:
+- The parsed data is only used to extract `url` and `targetId` strings
+- No code execution or eval occurs
+- Failed JSON parsing is silently caught
+- The extracted values are only stored in `browserTabUrls` (a `Map<string, string>`)
+
+**Finding:** No injection risk from JSON parsing itself. The risk is cache poisoning (covered in F-NEW-1).
 
 ---
 
-### F-4: Concurrent Resolution Tests Are Mocked (Low)
+## 3. Scrubbing Completeness
 
-**Severity: Low**
-**Location:** `tests/concurrent.test.ts`
+### Hook Coverage
 
-All 5 concurrent resolution tests use `simulateCredentialResolution()` — a mock function that returns hardcoded credentials after a `setTimeout`. These tests verify that `Promise.all()` works correctly (which is a JavaScript runtime guarantee, not a vault property).
+| Hook | Location | Priority | Scrubs | Modifies |
+|------|----------|----------|--------|----------|
+| `after_tool_call` | index.ts:622 | 1 | ❌ (audit only + URL caching) | No |
+| `tool_result_persist` | index.ts:546 | 1 | ✅ regex + literal + array content | Returns `{message}` |
+| `before_message_write` | index.ts:590 | 1 | ✅ regex + literal + tracking + array content | Returns `{message}` |
+| `message_sending` | index.ts:632 | 1 | ✅ regex + literal (string only) | Returns `{content}` |
 
-The tests do NOT exercise:
-- Real Argon2id derivation under concurrent load
-- File I/O contention when multiple resolutions read the same `.enc` file simultaneously
-- Credential cache behavior under concurrent access (Map operations are synchronous in V8, so this is actually safe, but it's not tested)
+**Finding: `after_tool_call` does NOT scrub.** This is by design — it's observe-only in the OpenClaw API. The Perl stdout scrubber catches credentials before they reach the result.
+
+### Scrubbing Pipeline (3 layers)
+
+1. **Regex patterns** — compiled from `tools.yaml` + global patterns (Telegram, Slack)
+2. **Literal indexOf** — exact credential value match from `literalCredentials` Map
+3. **Env-var name** — `KEY=[VAULT:env-redacted] patterns with selective scrubbing (skips already-scrubbed values)
+
+### Potential Scrubbing Gaps
+
+**Browser password in `params.text`**: When a `$vault:` placeholder is resolved to the actual credential, the credential is placed in `params.text` (or `request.text`). After the browser tool executes, the result typically does NOT contain the credential (it was typed into a password field, not echoed). However, if the browser tool returns an error containing the params, the credential would appear in the error message. The `tool_result_persist` hook would catch this via literal scrubbing.
+
+**Browser cookies in `params._vaultCookies`**: Cookie values are placed in a custom params field. The browser tool is expected to inject these via `addCookies()` and not echo them. If the params themselves leak (e.g., via debug logging in the gateway), the cookie values could be exposed. The scrubbing hooks operate on the result/message content, not on the original params.
+
+**Verdict:** Scrubbing is comprehensive for all output paths. The one gap is params-level credential exposure to the browser tool itself, which is an inherent requirement of the injection model.
+
+---
+
+## 4. CLI Add Flow Security
+
+### 4A. `--yes` Flag Behavior — MEDIUM (F-NEW-4)
+
+**Severity: MEDIUM**
+**Location:** `src/cli.ts` lines 386-398
+
+When `--yes` is used with a cookie file path:
+```typescript
+if (options.yes) {
+  // --yes skips the delete prompt; warn that plaintext file still exists
+  console.log(`  ⚠ Source file still exists at ${cookieSourcePath}`);
+}
+```
+
+**Finding:** The `--yes` flag skips the secure delete prompt and leaves the plaintext cookie file on disk. The warning is printed to stdout but may be lost in automated/scripted usage.
 
 **Recommendation:**
-- Add at least one concurrent test that uses real `readCredentialFile()` with actual encrypted files
-- The existing mocked tests can remain as documentation of the concurrency contract
+- In `--yes` mode, default to secure delete (inverse of current behavior — safer default)
+- Add `--keep-source` flag for cases where the file should be preserved
+- At minimum, write an audit event when `--yes` leaves a plaintext file on disk
+
+### 4B. Cookie File Secure Delete — INFO
+
+**Severity: INFO (Positive Finding)**
+**Location:** `src/cli.ts` `secureDeleteFile()` (lines 197-215)
+
+The implementation overwrites with zeros before unlinking. This is effective against casual file recovery but not against:
+- Journaling filesystem recovery (ext4 journal may contain original data)
+- SSD wear-leveling (original blocks may persist in spare area)
+- Copy-on-write filesystems (btrfs, ZFS — original snapshot may exist)
+
+**Recommendation:** Document the limitations. For truly sensitive cookie files, recommend using an encrypted filesystem or tmpfs mount.
+
+### 4C. Inline Credential via `--key` — LOW (Accepted)
+
+**Severity: LOW (Accepted Risk)**
+**Location:** `src/cli.ts` lines 399, 877
+
+Both interactive and non-interactive paths warn about shell history:
+```
+⚠ Cookie JSON was passed via --key — it may be visible in shell history.
+```
+
+The credential value appears in:
+- Shell history file (`~/.bash_history`, `~/.zsh_history`)
+- `/proc/PID/cmdline` while the process is running
+- System audit logs (auditd, if configured)
+
+**Mitigations available to the user:**
+- Prefix command with a space (in zsh/bash with `HISTCONTROL=ignorespace`)
+- Use stdin piping: `echo "secret" | openclaw vault add tool --key -`
+- Use env var: `VAULT_KEY=[VAULT:env-redacted] secret.txt) openclaw vault add tool --key "$VAULT_KEY"`
+
+**Note:** Stdin piping (`--key -`) is NOT currently implemented. The `--key` flag only accepts a direct value or file path.
+
+**Recommendation:** Add `--key -` support to read from stdin, documented as the secure alternative.
+
+### 4D. `--yes` Validation Strictness — INFO (Positive Finding)
+
+**Severity: INFO**
+
+The `--yes` flag correctly requires all necessary flags for each usage type:
+- `api` requires `--url`
+- `cli` requires `--command` and `--env`
+- `browser-login` requires `--domain`
+- `browser-session` requires `--domain` and valid cookie data in `--key`
+
+Unknown format credentials cannot use `--yes` without `--use` flags. This prevents accidental [VAULT:gmail-app].
 
 ---
 
-### F-5: Fail-Open Error Handling Lacks Alerting (Low)
+## 5. New Attack Surfaces
 
-**Severity: Low**
-**Location:** `src/index.ts`, all hook handlers (lines 442, 486, 530, 586, 616)
+### 5A. Debug Logging to stderr — MEDIUM (F-NEW-5)
 
-All hook handlers catch errors and return void (fail-open). The `logVaultError()` function only writes to `error.log` when `OPENCLAW_VAULT_DEBUG` is set. In production, a scrubbing failure would be completely silent — no console output, no audit log entry, no notification.
+**Severity: MEDIUM**
+**Location:** `src/index.ts` lines 413, 636, 658, 661
 
-**Impact:** If a scrubbing bug causes an error, credentials could leak through unscrubbed content with no indication to the operator.
+Four `console.error` calls with `[vault-debug]` prefix are **unconditional** — they run in production, not just when `OPENCLAW_VAULT_DEBUG` is set:
 
-**Recommendation:**
-- Always log scrubbing errors to the audit log (not just when debug mode is enabled)
-- Consider a `console.warn` for scrubbing failures in production — these are security events that warrant visibility
-- The `logVaultError` function already exists; it should be augmented to always write to the audit log regardless of debug mode
+```typescript
+console.error(`[vault-debug] browser-password resolve: targetId="${targetId}" cachedUrl="${cachedUrl}" params.url="${params.url}" cacheSize=${state.browserTabUrls.size} cacheKeys=[${[...state.browserTabUrls.keys()].join(",")}]`);
+console.error(`[vault-debug] after_tool_call browser: action=${event.params.action} result=${JSON.stringify(event.result).slice(0, 200)} error=${event.error}`);
+```
 
----
+These log:
+- All browser tab target IDs and their cached URLs
+- Partial browser tool results (first 200 chars, which could contain page content)
+- Cache size and all cache keys
+- Browser action parameters
 
-### F-6: SIGUSR2 Hot-Reload Preserves Stale Literal Credentials (Low)
+**Impact:** Credentials are NOT logged (good), but operational metadata about which sites the agent visits and which tabs it uses IS logged. In a multi-user/shared system, this metadata could be sensitive.
 
-**Severity: Low**
-**Location:** `src/index.ts`, SIGUSR2 handler (lines 677-686); `src/scrubber.ts`, module-level `literalCredentials` Map
+**Recommendation:** Gate these behind `OPENCLAW_VAULT_DEBUG` like other debug logging. Replace with `logVaultError()` or remove entirely.
 
-When the vault config is reloaded via SIGUSR2, the credential cache is preserved (line 685: `newState.credentialCache = state.credentialCache`), but the module-level `literalCredentials` Map in `scrubber.ts` is never cleared. This means:
-- Credentials that were removed from the vault remain in the literal scrub set
-- This is actually a *positive* security property (over-scrubbing is safer than under-scrubbing)
-- However, it means the literal match set grows monotonically and is never pruned
+### 5B. `browserTabUrls` Cache Unbounded Growth — LOW (F-NEW-6)
 
-**Recommendation:** This is informational. The behavior is security-positive (scrubs more, not less). Document it.
+**Severity: LOW**
+**Location:** `src/index.ts` line 85, `browserTabUrls: Map<string, string>`
 
----
+The tab URL cache grows without bound. Every `navigate`/`open` action and every browser result adds an entry. There is no eviction, no TTL, and no size limit.
 
-### F-7: Global Scrub Patterns Missing Common Providers (Informational)
+**Impact:** Me[VAULT:gmail-app]-running sessions. Each entry is small (~100 bytes), so 10,000 entries ≈ 1MB. Not a security vulnerability per se, but in a session with thousands of browser actions, it could accumulate.
 
-**Severity: Informational**
-**Location:** `src/scrubber.ts`, `GLOBAL_SCRUB_PATTERNS` (lines 18-22)
+**Recommendation:** Add a max size (e.g., 1000 entries) with LRU eviction, or clear on SIGUSR2 reload.
 
-Only Telegram bot tokens and Slack bot tokens have global scrub patterns. Other common credential formats that could appear in agent output are not covered globally:
-- AWS access keys (`AKIA[0-9A-Z]{16}`)
-- Google Cloud service account JSON
-- Database connection strings with embedded passwords
-- Bearer tokens in HTTP headers
+### 5C. Raw Cookie String Parsing — LOW (F-NEW-7)
 
-**Recommendation:** Consider adding global patterns for AWS, GCP, and common JWT bearer patterns. These would provide defense-in-depth even for credentials not registered in the vault.
+**Severity: LOW**
+**Location:** `src/browser.ts` `parseRawCookieString()` (lines 182-204), `src/cli.ts` multiple call sites
 
----
+The `--key` flag now accepts raw cookie strings like `session_id=abc123`. The detection heuristic is:
+```typescript
+if (options.key && !fs.existsSync(options.key) && options.key.includes("=")) {
+  // Treat as raw cookie string
+}
+```
 
-### F-10: System Vault Sync/Remove via Setuid Resolver (Resolved)
+**Edge case:** If a credential value happens to contain `=` (e.g., a base64-encoded API key like `dGVzdA==`) and is NOT a file path, it would be incorrectly parsed as a raw cookie string in the `browser-session` path. However, this only applies when `--use browser-session` is explicitly specified, so the user's intent is clear.
 
-**Severity: Medium → RESOLVED (commits 290cf09, bca95e5)**
+**Recommendation:** Document that `--key` with `--use browser-session` interprets `=` as cookie separator. For base64 credentials, use `--use api` or `--use cli` instead.
 
-**Original issue:** `syncToSystemVault()` and `removeFromSystemVault()` ran as the current user but the system vault (`/var/lib/openclaw-vault/`) is owned by `openclaw-vault` (mode 700). Sync fell back to warnings, remove silently failed, leaving stale `.enc` files.
+### 5D. Interactive Flow Cookie Re-encryption — INFO
 
-**Resolution:** The setuid resolver binary now supports `sync`, `remove`, and `sync-meta` actions. The TS code routes these operations through the resolver binary (which runs as `openclaw-vault`), with fallback to direct file operations if the binary is unavailable.
+**Severity: INFO**
+**Location:** `src/cli.ts` line 862
 
-**Additional fix (bca95e5):** Files created by the resolver are now explicitly set to mode 0600 before rename, preventing world-readable encrypted credentials.
+In the interactive flow, if the user selects option 4 (browser session), the credential is re-encrypted as a cookie JSON payload, overwriting the previously encrypted `--key` value:
 
----
+```typescript
+// Encrypt cookie data (may overwrite key encrypted above)
+await writeCredentialFile(vaultDir, tool, credentialPayload, passphrase);
+```
 
-### F-8: Multi-Command Injection May Interact with Shell Metacharacters (Informational) — RESOLVED
-
-**Severity: Informational → RESOLVED (commit 630c7a5)**
-
-**Original issue:** The command prepend logic (`export KEY=[VAULT:env-redacted] && command`) embedded credentials in the command string with shell escaping that could interact with different shells or special characters.
-
-**Resolution:** Command prepend removed entirely. Credentials are now injected via `params.env` only. The Perl scrubber uses base64 encoding for credentials, eliminating all shell escaping concerns. No credential value appears in any command string.
-
-### F-9: LLM Receives Unscrubbed Tool Output (High)
-
-**Severity: High**
-**Location:** OpenClaw gateway architecture (not vault-specific code)
-
-**Finding:** The vault scrubs credentials at `tool_result_persist`, `before_message_write`, and `message_sending` hooks. However, the LLM receives the raw tool result **before** `tool_result_persist` runs. The persist hook only scrubs what gets written to the session transcript — not what the LLM sees in real-time during inference.
-
-**Attack path:**
-1. Agent calls `exec` with a command matching an injection rule (e.g., `gws auth status`)
-2. Vault injects credentials via env vars / command prepend
-3. Tool executes and returns output — **Perl stdout scrubber replaces credential values before exec captures stdout**
-4. LLM receives the scrubbed output with `[VAULT:name]` replacement markers
-5. `tool_result_persist` scrubs the transcript for persistence
-6. `message_sending` scrubs outbound messages as a final defense layer
-
-**Status: MITIGATED (commit 630c7a5)**
-
-The Perl stdout scrubber (implemented via `before_tool_call` hook) wraps exec commands in `{ command ; } 2>&1 | perl -pe 's/\Qcredential\E/[VAULT:name]/g'`. Credentials are base64-encoded in the perl command, decoded at runtime via MIME::Base64. This catches the primary exfiltration vectors: `printenv`, `env.VAR` in jq, `echo $VAR`.
-
-**Known limitations:**
-- File redirect bypass: `echo $SECRET > /tmp/file` writes to disk before the pipe sees it
-- Shell injection: sophisticated command construction could bypass the pipe (e.g., subshells, heredocs)
-- Both require deliberate multi-step attacks by a malicious LLM
-
-**Original vulnerability (2026-03-12):** The LLM saw the raw GWS client ID in tool output and posted a partial form to Telegram that didn't match the full regex pattern. This is now mitigated by the Perl scrubber catching the value at the subprocess output level.
-
-**Remaining recommendation:** Request OpenClaw `transform_tool_result` hook for defense-in-depth — this would provide a second scrubbing layer between tool execution and LLM inference, independent of the Perl pipe approach.
+The comment acknowledges this. The original `--key` value (which was already encrypted at line 696) is overwritten with the parsed cookie structure. This is correct behavior but means the original key format is lost.
 
 ---
 
-## Perl Scrubber Vulnerability Analysis
+## 6. Findings Summary
 
-### Injection Path Review
+### New Findings (This Audit)
 
-Credentials are injected exclusively via `params.env`. Confirmed by `grep -n 'process\.env\[' src/index.ts` returning zero matches. The Perl scrubber uses base64-encoded credentials decoded at runtime via `MIME::Base64`, with `\Q...\E` literal quoting for safe regex matching.
+| ID | Finding | Severity | Status |
+|----|---------|----------|--------|
+| F-NEW-1 | Tab URL cache can be populated from parsed `content[0].text` in tool results — cache poisoning possible but domain pin still validates | MEDIUM | Open |
+| F-NEW-2 | Cookie domain filtering is correct but `filterTrackingCookies` not called in injection path | LOW | Open |
+| F-NEW-3 | `content[0].text` JSON parsing has no direct injection risk | LOW | Informational |
+| F-NEW-4 | `--yes` flag skips cookie file secure delete, leaving plaintext on disk | MEDIUM | Open |
+| F-NEW-5 | Debug logging to stderr is unconditional — leaks operational metadata in production | MEDIUM | Open |
+| F-NEW-6 | `browserTabUrls` cache has no size limit or TTL | LOW | Open |
+| F-NEW-7 | Raw cookie string parsing heuristic may misinterpret `=` in non-cookie credentials | LOW | Open |
 
-### Perl Script Injection via Base64 — NOT VULNERABLE ✅
+### Prior Findings Status
 
-Base64 output alphabet `[A-Za-z0-9+/=]` contains no Perl metacharacters. The base64 string is placed inside Perl double quotes where only `$`, `@`, `\`, and `"` trigger interpolation. None appear in base64 output.
-
-### Perl Script Injection via Tool Name — NOT VULNERABLE ✅
-
-Tool names validated to `^[a-zA-Z0-9][a-zA-Z0-9._-]*$`. The replacement string `[VAULT:toolname]` goes into Perl double quotes. Characters `.`, `-`, `[`, `]`, `:` are all literal in Perl double-quoted strings.
-
-### Base64 Encoding Exploits — NOT VULNERABLE ✅
-
-`Buffer.from(credential).toString("base64")` (Node.js) and `decode_base64()` (Perl MIME::Base64) are standard RFC 4648 implementations. Round-trip correctness verified by tests including credentials with special characters (`$`, `'`, `"`, `\`, `|`).
-
-### Group Breakout via Crafted Command — LOW-MEDIUM
-
-The Perl scrubber wraps commands as `{ COMMAND ; } 2>&1 | perl -pe '...'`. If the LLM crafts a command containing `; }` (e.g., `echo safe ; } ; printenv SECRET ; { :`), the output from the middle commands bypasses the Perl pipe. This is a variant of the same fundamental limitation as direct subprocess exfiltration (Threat 1) — the LLM controls the command and the subprocess has the credential.
-
-### PTY Mode Compatibility — VERIFIED SAFE ✅
-
-3 PTY-mode tests added (commit 9889ce5) using `script -qc` (real PTY allocation). All pass. The pipe sits *outside* the PTY boundary: `{ script -qc 'command' /dev/null ; } 2>&1 | perl -pe '...'`. PTY output flows through the scrubber correctly.
-
-### Empty Credential in Perl Scrubber — LOW
-
-If a credential resolves to an empty or very short string, `s/\Q\E//g` matches the empty string at every position, potentially corrupting output. Unlikely in practice (empty credentials fail authentication), but a min-length guard should be added.
-
-### Edge Cases
-
-| Edge Case | Behavior | Severity |
-|-----------|----------|----------|
-| Credential with newlines | `perl -pe` processes line-by-line; multiline credential won't match across boundaries | Low |
-| Very long credentials | Base64 increases length ~33%; could exceed ARG_MAX (~2MB) on extreme cases | Informational |
-| File redirect bypass | `echo $SECRET > /tmp/file` writes before pipe sees it | Low (requires multi-step attack) |
+| ID | Finding | Original Severity | Current Status |
+|----|---------|-------------------|----------------|
+| F-1 | process.env contamination | Medium | ✅ RESOLVED (params.env only) |
+| F-2 | Rust resolver path traversal | Medium | ✅ RESOLVED (tool name validation) |
+| F-3 | Credential cache no max size | Low | Open (unchanged) |
+| F-4 | Concurrent tests mocked | Low | Open (unchanged) |
+| F-5 | Fail-open error handling silent | Low | Open (unchanged) |
+| F-6 | SIGUSR2 preserves stale literals | Low | Open (security-positive) |
+| F-7 | Global scrub patterns missing providers | Info | Open (unchanged) |
+| F-8 | Multi-command shell escaping | Info | ✅ RESOLVED (params.env only) |
+| F-9 | LLM receives unscrubbed tool output | High | ✅ MITIGATED (Perl scrubber) |
+| F-10 | System vault sync/remove | Medium | ✅ RESOLVED (setuid resolver) |
 
 ---
 
-## Gaps & Recommendations
+## 7. Recommendations (Priority Order)
 
-### Security Gaps
+### Must Fix (Before GA)
 
-| # | Gap | Severity | Recommendation |
-|---|-----|----------|---------------|
-| G-1 | ~~process.env contamination during injection~~ | ~~Medium~~ | **RESOLVED** — params.env only, no process.env mutation |
-| G-2 | ~~Rust resolver lacks tool name validation~~ | ~~Medium~~ | **RESOLVED** — path traversal validation added (commit 290cf09) |
-| G-3 | ~~No test for process.env cleanup lifecycle~~ | ~~Medium~~ → Low | **Reclassified** — underlying vulnerability (F-1) eliminated. Gap is now a missing regression test asserting process.env is NOT modified during injection. |
-| G-4 | No integration test for plugin priority isolation | Low | Add mock-plugin test verifying injection/scrubbing priority ordering |
-| G-5 | Concurrent tests are fully mocked | Low | Add at least one real concurrent crypto test |
-| G-6 | Scrubbing errors silent in production | Low | Always log scrubbing errors to audit log |
-| G-7 | No gateway log scanning for leaked credentials | Low | Planned but not built (acknowledged in prior audit) |
-| G-8 | vault_status tool doesn't verify credential file integrity | Informational | Add optional integrity check (attempt decrypt, report failures) |
+1. **Gate debug logging behind `OPENCLAW_VAULT_DEBUG`** (F-NEW-5) — Wrap all `[vault-debug]` `console.error` calls in a debug check. These should never run in production.
 
-### Positive Findings Worth Preserving
+2. **Change `--yes` default for cookie files** (F-NEW-4) — Either auto-delete the source file in `--yes` mode (with `--keep-source` opt-out), or write an audit event when plaintext is left on disk.
 
-- **Atomic writes everywhere** — both `writeCredentialFile()` and `writeConfig()` use tmp+rename pattern
-- **Secure delete on remove** — `removeCredentialFile()` overwrites with random data before unlinking
-- **Config backup and recovery** — `readConfig()` auto-recovers from corrupted tools.yaml using `.bak` file
-- **Tool name validation** — comprehensive validation in `cli.ts` prevents path traversal via the CLI path
-- **Audit log rotation** — 5MB cap prevents unbounded growth
-- **Setuid + seccomp + capability dropping** — Rust resolver has defense-in-depth OS isolation
-- **False positive test corpus** — dedicated tests prevent over-scrubbing of UUIDs, git hashes, CSS colors
+### Should Fix
+
+3. **Restrict tab URL cache population source** (F-NEW-1) — Only cache URLs from `navigate`/`open` params (user-initiated). Remove or restrict the `content[0].text` JSON parsing fallback, or validate against the original requested URL.
+
+4. **Add `--key -` stdin support** (F-NEW-7-related) — Read credential from stdin to avoid shell history exposure. Document as the recommended secure path.
+
+5. **Cap `browserTabUrls` cache size** (F-NEW-6) — Add LRU eviction at 500-1000 entries.
+
+### Nice to Have
+
+6. Call `filterTrackingCookies` in the cookie injection path (F-NEW-2)
+7. Add process.env cleanliness regression test (from prior audit G-3)
+8. Add concur[VAULT:gmail-app] crypto (from prior audit G-5)
+9. Add global scrub patterns for AWS, GCP (from prior audit F-7)
 
 ---
 
-## Dependency Analysis
+## 8. Positive Findings Worth Preserving
 
-### Production Dependencies (2)
-
-| Package | Version | Risk | Notes |
-|---------|---------|------|-------|
-| `argon2` | ^0.41.1 | **Low** | Native module (N-API). Well-maintained binding to the reference C implementation. No known vulnerabilities. Handles the most security-critical operation (key derivation). |
-| `yaml` | ^2.7.0 | **Low** | Pure JavaScript YAML parser. Used only for config file read/write. No known vulnerabilities. |
-
-### Dev Dependencies (3)
-
-| Package | Version | Risk | Notes |
-|---------|---------|------|-------|
-| `typescript` | ^5.7.0 | **Negligible** | Build-time only |
-| `vitest` | ^3.0.0 | **Negligible** | Test-time only |
-| `@types/node` | ^22.0.0 | **Negligible** | Build-time only |
-
-### Rust Dependencies (Resolver)
-
-| Crate | Version | Risk | Notes |
-|-------|---------|------|-------|
-| `aes-gcm` | 0.10 | **Low** | RustCrypto project, well-audited |
-| `argon2` | 0.5 | **Low** | Pure Rust Argon2id implementation |
-| `serde`/`serde_json` | 1.x | **Low** | De facto standard serialization |
-| `sha2` | 0.10 | **Low** | RustCrypto SHA-256 |
-| `seccompiler` | 0.4 | **Low** | AWS Firecracker project, well-maintained |
-| `caps` | 0.5 | **Low** | Linux capabilities management |
-| `libc` | 0.2 | **Low** | Standard FFI bindings |
-| `hostname` | 0.4 | **Low** | OS hostname retrieval |
-| `hex` | 0.4 | **Low** | Hex encoding/decoding |
-
-### npm Audit Results
-
-**0 vulnerabilities** across 6 production and 103 dev dependencies (as of 2026-03-12).
-
-### Supply Chain Assessment
-
-- **Minimal dependency surface:** Only 2 production dependencies (argon2 + yaml). The attack surface for supply-chain compromise is very small.
-- **No transitive production dependencies beyond argon2's N-API bindings.** The yaml package is pure JavaScript with zero dependencies.
-- **Rust resolver uses well-established crates** from RustCrypto and AWS Firecracker ecosystems.
-- **CI pipeline** uses `npm ci` (locked dependencies) and caches Cargo registry.
-- **`package.json` uses caret ranges** (`^0.41.1`) — `npm ci` with lockfile mitigates this, but without a lockfile, minor version bumps could introduce changes.
+- **Domain pinning is robust** — Handles IDN homograph, port injection, path confusion, data:/javascript: URLs, case sensitivity
+- **`$vault:` placeholder model** — LLM never sees actual credentials; only the placeholder name
+- **Split-priority hooks** — Injection at priority 10 (last), scrubbing at priority 1 (first)
+- **Perl stdout scrubber with base64 encoding** — No credential appears in plaintext in command strings
+- **Cookie domain filtering** — Cookies filtered to match pin domain before injection
+- **Expired cookie removal** — `removeExpiredCookies()` called before injection
+- **Cookie file secure delete** — Zero-overwrite before unlink (when user confirms)
+- **`--yes` validation strictness** — Requires all flags for the specified usage type
+- **Tool name validation** — Comprehensive validation prevents path traversal
+- **695 tests across 36 files** — Including adversarial, false-positive, browser E2E, interactive flow tests
 
 ---
 
-## Test Coverage Assessment
+## 9. Test Coverage Assessment (Updated)
 
-### Coverage by Component
+### New Test Files (This Branch)
 
-| Component | Source File | Test File(s) | Tests | Coverage Notes |
-|-----------|-----------|------------|-------|----------------|
-| Encryption | `src/crypto.ts` | `tests/crypto.test.ts` | 19 | Excellent — round-trip, wrong passphrase, tampered data, file perms, secure delete |
-| Scrubbing | `src/scrubber.ts` | `tests/adversarial.test.ts`, `tests/hooks.test.ts`, `tests/write-edit-scrub.test.ts`, `tests/compaction-scrub.test.ts`, `tests/false-positives.test.ts` | ~150+ | Excellent — 3-layer pipeline, adversarial bypass attempts, false positive corpus |
-| Registry | `src/registry.ts` | (inline in other test files) | ~22 | Good — glob matching, command matching, URL matching |
-| Config | `src/config.ts` | (inline in e2e tests) | ~10 | Adequate — read/write/atomic, meta file |
-| Browser | `src/browser.ts` | `tests/browser.test.ts` | 94 | Excellent — domain pinning, cookies, tracking filters, password resolution |
-| Audit | `src/audit.ts` | (inline in hook tests) | ~29 | Good — JSONL append, rotation, filtered queries |
-| CLI | `src/cli.ts` | (manual testing per prior audit) | Manual | Adequate — tested via manual simulation, tool name validation unit tested |
-| Resolver | `resolver/src/main.rs` | Inline Rust tests + `tests/e2e.test.ts`, `tests/cross-compat.test.ts` | ~23 | Good — round-trip, cross-language compat, error handling |
-| Hooks | `src/index.ts` | `tests/hooks.test.ts`, `tests/e2e.test.ts` | ~27 | Adequate — hook registration tested indirectly, scrubbing pipeline tested directly |
-| Guesser | `src/guesser.ts` | (separate guesser test file) | ~61 | Good — prefix detection, JWT, JSON, password, generic API key |
-| Vault Status | `src/vault-status.ts` | (tested via CLI manual) | Minimal | Gap — no dedicated unit tests for `computeVaultStatus()` |
+| Test File | Tests | Coverage |
+|-----------|-------|----------|
+| `tests/browser-password-e2e.test.ts` | ~15 | Tab URL cache → domain pin → credential injection E2E |
+| `tests/browser-session-e2e.test.ts` | ~15 | Cookie file → parse → encrypt → inject E2E |
+| `tests/cli-use-flag.test.ts` | ~20 | `--use` flag combinations with `--yes` |
+| `tests/interactive-flow.test.ts` | ~18 | Interac[VAULT:gmail-app] mocked stdin |
+| `tests/usage-config.test.ts` | ~25 | `buildToolConfig()` from `UsageSelection` |
 
-### Missing Test Cases
+### Missing Test Cases (New)
 
-1. ~~**process.env injection/cleanup lifecycle**~~ — RESOLVED: process.env is no longer used for injection
-2. **Concurrent resolution with real crypto** — all concurrent tests use mocks
-3. **Credential cache TTL enforcement** — no test verifies that expired cache entries are actually re-derived
-4. **SIGUSR2 hot-reload** — no test verifies config reload behavior
-5. **Vault status tool** — no unit test for `computeVaultStatus()` or `createVaultStatusTool().execute()`
-6. **Error path in hooks** — no test verifies fail-open behavior when scrubbing throws
-7. **Audit log rotation** — no test for the 5MB rotation logic in `writeAuditEvent()`
-8. **Tool name validation in Rust resolver** — (doesn't exist in code, should be added and tested)
+1. **Tab URL cache poisoning** — No test verifies that a malicious `content[0].text` result cannot cause credential injection to an unintended domain
+2. **`--yes` with cookie file path** — No test verifies the plaintext file warning behavior
+3. **Raw cookie string `=` ambiguity** — No test verifies behavior when a non-cookie credential containing `=` is used with `--use browser-session`
+4. **Debug logging gating** — No test verifies `[vault-debug]` messages are gated behind env var (they currently aren't)
+5. **`browserTabUrls` cache size** — No test for memory growth under many navigations
 
 ---
 
-## Overall Risk Rating
+## 10. Dependency Analysis (Updated)
+
+No new production dependencies added in this branch. Same 2 production deps (argon2, yaml), same 3 dev deps (typescript, vitest, @types/node).
+
+**npm audit: 0 vulnerabilities** (verified 2026-03-16).
+
+---
+
+## 11. Overall Risk Rating
 
 **LOW**
 
-All Medium-severity findings have been resolved:
-- **F-1** (process.env contamination) → RESOLVED — params.env only, zero process.env mutations
-- **F-2** (Rust resolver path traversal) → RESOLVED — tool name validation rejects `/`, `\`, `..`, leading `.`
-- **F-9** (LLM unscrubbed output) → MITIGATED to Low residual — Perl stdout scrubber catches primary exfiltration vectors; bypasses require deliberate multi-step attacks
-- **F-10** (System vault sync/remove) → RESOLVED — routed through setuid resolver with 0600 permissions
-- **G-1, G-2, G-3** → RESOLVED or reclassified to Low
+The UX overhaul is well-executed. The browser credential support adds meaningful new functionality with appropriate security controls (domain pinning, cookie filtering, placeholder model). The three MEDIUM findings are:
+- F-NEW-1 (cache poisoning): Mitigated by domain pin validation — worst case is denial of service
+- F-NEW-4 (`--yes` skips delete): Operational risk, not a credential leak vector
+- F-NEW-5 (debug logging): Information disclosure of operational metadata, not credentials
 
-Remaining open items are exclusively Low or Informational:
-- **Low:** Cache sizing (F-3), mocked concurrency tests (F-4), silent fail-open (F-5), missing integration tests (G-4, G-5, G-6, G-7)
-- **Informational:** Global pattern coverage (F-7), stale literal over-scrubbing (F-6, security-positive), vault_status integrity (G-8)
-
-The vault demonstrates defense-in-depth: AES-256-GCM + Argon2id crypto, 5-hook scrubbing pipeline, params.env-only credential injection, Perl stdout scrubber, setuid resolver with seccomp + capability dropping, path traversal validation, 0600 file permissions, atomic writes, secure delete, and 610 automated tests including adversarial coverage.
-
-The codebase shows evidence of security-conscious development. The threat model is honest about limitations and does not overstate the vault's protections.
+No path was found where a credential could leak to an unintended recipient through the new code. The defense-in-depth model (domain pinning → scrubbing pipeline → literal matching) provides multiple layers of protection.
 
 ---
 
-## Changes from Prior Audit
+## Changes from Prior Audit (2026-03-12)
 
-Comparison with the prior audit dated 2026-03-11.
+### What's New
 
-### What's New in This Audit
-
-- **F-1: process.env contamination finding** — Not identified in the prior audit. The prior audit did not examine the race window between credential injection into `process.env` and cleanup in `after_tool_call`. This is the most significant new finding.
-- **F-2: Rust resolver path traversal** — Not identified in the prior audit. The resolver binary's input validation was not assessed.
-- **F-3: Credential cache sizing** — New finding, informational.
-- **F-5: Fail-open error handling alerting gap** — Prior audit noted fail-open as a design choice. This audit adds that production failures are completely silent (no audit log entry without debug mode).
-- **F-7: Global scrub patterns coverage** — New informational finding.
-- **F-8: Multi-command shell escaping** — New informational finding.
-- **Comprehensive dependency analysis** — Prior audit did not include npm audit results or Rust crate assessment.
-- **Rust resolver source review** — This audit includes line-by-line review of `resolver/src/main.rs` including seccomp filter, capability dropping, and path resolution.
-
-### Post-Audit Changes (2026-03-12, same day)
-
-The following changes were implemented during the doc review session after the audit was completed:
-
-- **Protocol versioning added to resolver** — Both TS plugin and Rust resolver now include `protocol_version` in their JSON communication. On mismatch, the resolver rejects with a structured `EPROTO` error. This addresses the version drift risk identified in the v4.5.5 spec (Pitfall #17).
-- **Configurable resolver failure policy** — New `onResolverFailure` config option: `"block"` (default, credential not injected) or `"warn-and-inline"` (falls back to inline decryption with security downgrade audit event).
-- **Actionable warnings on resolver failure** — Warnings injected into tool output include direction-specific fix instructions (which side to update). Prominent console warning on first mismatch per session.
-- **New audit event types** — `resolver_failure` and `security_downgrade` events written to audit log on resolver failures.
-- **Pre-built binary rebuilt** — `bin/linux-x64/openclaw-vault-resolver` updated with protocol versioning support.
-- **THREAT-MODEL.md accuracy pass** — Threat 1 reframed (honest about prompt injection limits), Threat 6 corrected (process.env is briefly set during injection), Path 4 fixed, overview tightened.
-- **Sandbox compatibility documented** — SPEC.md and README.md now honestly state sandbox mode is untested with real gateway Docker sandbox.
-
-### What Improved Since Prior Audit
-
-- All 12 bugs identified in the prior audit remain fixed (verified by code inspection):
-  - Bug #1: Tool name validation (confirmed in `cli.ts` `validateToolName()`)
-  - Bug #3: SIGUSR2 pgrep fallback removed (confirmed in `config.ts` `signalGatewayReload()`)
-  - Bug #5: Debug logging gated behind OPENCLAW_VAULT_DEBUG (confirmed in `index.ts` `logVaultError()`)
-  - Bug #7: Multi-line command matching (confirmed in `registry.ts` `matchesCommand()`)
-  - Bug #8: Try-catch on all hooks (confirmed in `index.ts` — 5 handler functions wrapped)
-  - Bug #9: Atomic config writes (confirmed in `config.ts` `writeConfig()`)
-  - Bug #10: Cache TTL (confirmed in `index.ts` `CACHE_TTL_MS = 15 * 60 * 1000`)
-  - Bug #11: Error log path (confirmed in `index.ts` `logVaultError()` — uses `~/.openclaw/vault/error.log`)
-  - Bug #12: Audit log rotation (confirmed in `audit.ts` `MAX_AUDIT_LOG_BYTES = 5 * 1024 * 1024`)
+- **Browser password injection flow** — Full E2E review of `$vault:` placeholder → domain pin → credential resolution
+- **Browser cookie injection flow** — Cookie parsing, domain filtering, expired cookie removal, `_vaultCookies` injection
+- **Tab URL cache analysis** — Cache poisoning vectors, `content[0].text` parsing risk
+- **CLI `vault add` UX overhaul** — `--use` flags, `--yes` non-interactive mode, raw cookie string support, cookie file secure delete
+- **Debug logging audit** — Identified unconditional `[vault-debug]` stderr output
+- **7 new findings** (3 MEDIUM, 4 LOW/INFO)
 
 ### What Regressed
 
-- Nothing regressed. All prior fixes are intact.
+- **Debug logging** — 4 unconditional `console.error` calls added in browser credential support that should be gated behind `OPENCLAW_VAULT_DEBUG`
 
-### What Was Removed
+### What Improved
 
-- The prior audit's "Gap Analysis" section listed 7 gaps all marked "Closed". This audit replaces that section with a new gap analysis reflecting current findings.
-- The prior audit's manual testing section (58 test cases) is not reproduced here as it represents a point-in-time validation. The automated test suite (610 tests across 30 files) provides ongoing coverage.
-
-### Status of Prior Known Limitations
-
-| Prior Limitation | Current Status |
-|-----------------|----------------|
-| Machine-key entropy | Unchanged — low-entropy inputs (hostname, uid, timestamp); encryption alone insufficient against local attacker. Binary mode sidesteps via OS-user file isolation. |
-| Fail-open scrubbing | Unchanged — this audit adds alerting gap (F-5) |
-| Scrubbing blind spots (base64, URL-encode, split) | Unchanged — all documented in adversarial tests |
-| No gateway log scanning | Unchanged — still not built |
-| Browser credentials not production-tested | Unchanged — still unit/integration tested only |
-| Single-user system vault | Unchanged — needs per-user separation |
-| Plugin install requires restart | Unchanged — SIGUSR2 handles config only |
+- **695 tests** (up from 610) across 36 files (up from 30)
+- **5 new test files** covering browser E2E, CLI use-flag, interactive flow, usage config
+- **Cookie domain filtering** — Correct bidirectional pin matching
+- **`--yes` validation** — Strict flag requirements prevent [VAULT:gmail-app]
+- **Secure delete** — Cookie file overwrite-before-unlink

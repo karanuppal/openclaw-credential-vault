@@ -81,6 +81,8 @@ interface VaultState {
   configMtimeMs: number;
   /** Track env vars injected into process.env for cleanup after tool call */
   injectedEnvVars: string[];
+  /** Cache of browser tab URLs (targetId → last known URL) for domain-pin resolution */
+  browserTabUrls: Map<string, string>;
 }
 
 let state: VaultState | null = null;
@@ -126,6 +128,7 @@ function loadState(): VaultState | null {
     credentialCache: new Map(),
     currentInjections: [],
     injectedEnvVars: [],
+    browserTabUrls: new Map(),
     configMtimeMs,
   };
 }
@@ -404,10 +407,12 @@ async function handleBeforeToolCall(
       if (toolConfig) {
         const rule = findBrowserPasswordRule(vaultName, toolConfig.inject);
         if (rule && rule.domainPin) {
-          // We need the current browser URL — it should be in params.url or
-          // we check params.targetUrl for context
+          // We need the current browser URL — check params first, then cached tab URL
+          const targetId = String(params.targetId ?? "");
+          const cachedUrl = targetId ? (state.browserTabUrls.get(targetId) ?? "") : "";
+          if (process.env.OPENCLAW_VAULT_DEBUG) console.error(`[vault-debug] browser-password resolve: targetId="${targetId}" cachedUrl="${cachedUrl}" params.url="${params.url}" cacheSize=${state.browserTabUrls.size} cacheKeys=[${[...state.browserTabUrls.keys()].join(",")}]`);
           const currentUrl = String(
-            params.url ?? params.targetUrl ?? ""
+            params.url ?? params.targetUrl ?? cachedUrl
           );
           const credResult = await getCredential(vaultName, state, "browser", currentUrl);
           if (credResult.credential) {
@@ -441,8 +446,10 @@ async function handleBeforeToolCall(
         if (toolConfig) {
           const rule = findBrowserPasswordRule(vaultName, toolConfig.inject);
           if (rule && rule.domainPin) {
+            const reqTargetId = String(params.targetId ?? "");
+            const reqCachedUrl = reqTargetId ? (state.browserTabUrls.get(reqTargetId) ?? "") : "";
             const currentUrl = String(
-              request.url ?? params.url ?? params.targetUrl ?? ""
+              request.url ?? params.url ?? params.targetUrl ?? reqCachedUrl
             );
             const credResult2 = await getCredential(vaultName, state, "browser", currentUrl);
             if (credResult2.credential) {
@@ -464,6 +471,15 @@ async function handleBeforeToolCall(
             }
           }
         }
+      }
+    }
+
+    // --- Cache browser tab URL for domain-pin resolution ---
+    if (action === "navigate" || action === "open") {
+      const navUrlForCache = String(params.url ?? "");
+      const tid = String(params.targetId ?? "");
+      if (navUrlForCache && tid) {
+        state.browserTabUrls.set(tid, navUrlForCache);
       }
     }
 
@@ -614,6 +630,31 @@ function handleAfterToolCall(
 ): void {
   try {
   if (!state) return;
+
+  // Cache browser tab URL from results (navigate, snapshot, etc. return url)
+  if (event.toolName === "browser") {
+    if (process.env.OPENCLAW_VAULT_DEBUG) console.error(`[vault-debug] after_tool_call browser: action=${event.params.action} result=${JSON.stringify(event.result).slice(0, 200)} error=${event.error}`);
+    if (event.result && typeof event.result === "object") {
+      const res = event.result as Record<string, unknown>;
+
+      // OpenClaw wraps tool results in {content: [...], details: {...}}
+      // The actual structured data (url, targetId) lives in `details`
+      const details = (res.details && typeof res.details === "object")
+        ? res.details as Record<string, unknown>
+        : res;
+
+      // Security: only trust `details` (structured data from OpenClaw), not content[0].text
+      // which could be manipulated by tool output. See SECURITY-AUDIT.md F-NEW-1.
+      const source = details;
+      const resultUrl = String(source.url ?? "");
+      const tid = String(event.params.targetId ?? source.targetId ?? "");
+      if (process.env.OPENCLAW_VAULT_DEBUG) console.error(`[vault-debug] after_tool_call: resultUrl="${resultUrl}" tid="${tid}" paramsTargetId="${event.params.targetId}" sourceTargetId="${source.targetId}" usedDetails=${source === details}`);
+      if (resultUrl && tid) {
+        state.browserTabUrls.set(tid, resultUrl);
+        if (process.env.OPENCLAW_VAULT_DEBUG) console.error(`[vault-debug] cached tab URL: ${tid} → ${resultUrl} (cacheSize=${state.browserTabUrls.size})`);
+      }
+    }
+  }
 
   // Phase 3C: Audit logging for credential access events
   const now = Date.now();

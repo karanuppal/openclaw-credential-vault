@@ -2,7 +2,7 @@
 
 ## What This Is
 
-Tests that prove the plugin **installs correctly and works** on a clean machine. Not functional testing — the 610 unit + integration tests already prove the code works. This verifies that packaging, installation, and platform-specific setup all succeed.
+Tests that prove the plugin **installs correctly and works** on a clean machine. Not functional testing — the ~695 unit + integration tests already prove the code works. This verifies that packaging, installation, and platform-specific setup all succeed.
 
 **The core assumption:** if install + basic usage works on a platform, everything else works. The code logic is platform-independent TypeScript. The only platform-dependent parts are the install process, the setup script, and the Rust binary resolver.
 
@@ -233,6 +233,6 @@ tests/install-verify/
 
 ## Relationship to Other Tests
 
-- **`npm test` (610 tests, ~37s):** proves the code works — logic, crypto, scrubbing, injection, security. Runs locally from source tree.
+- **`npm test` (~695 tests, 36 files):** proves the code works — logic, crypto, scrubbing, injection, browser credentials, hook-level E2E, security. Runs locally from source tree.
 - **`npm run verify-install` (3-7 combos, ~2-5 min):** proves the package works — install, setup, and platform-specific components. Runs in Docker.
 - **Zero overlap.** They test different things.

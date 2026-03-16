@@ -8,7 +8,7 @@ Encrypted credential management for [OpenClaw](https://openclaw.ai). Keeps API k
 - **Encryption at rest.** Each credential is individually encrypted with AES-256-GCM. Even if someone reads your vault directory, they get ciphertext.
 - **OS-level isolation.** A dedicated system user owns the credential files. The agent process can't read them — decryption happens in a separate, sandboxed Rust binary.
 - **Automatic output scrubbing.** Credentials are caught and redacted in tool output, outbound messages, and session transcripts through multiple independent layers.
-- **Thoroughly tested.** 610 tests across 30 files covering crypto, injection, scrubbing, adversarial attacks, false positives, and clean-machine install verification.
+- **Thoroughly tested.** ~695 tests across 36 files covering crypto, injection, scrubbing, browser credentials, adversarial attacks, false positives, hook-level E2E, and clean-machine install verification.
 
 ## Install
 
@@ -37,6 +37,7 @@ That's it. The agent can now use `gh` and call Stripe APIs without ever seeing t
 
 ## How It Works
 
+**CLI tools (gh, aws, curl, etc.):**
 ```
 Agent runs "gh pr list"
     ↓
@@ -51,6 +52,10 @@ Output scrubbed for credential patterns before the agent sees it
 Agent gets clean PR listings — no credential anywhere in context
 ```
 
+**Browser logins:** The agent types `$vault:gumroad-login` into a password field. The vault resolves the placeholder to the real password — but only if the browser tab is on an allowed domain (domain pinning). The credential never enters the agent's context window.
+
+**Browser sessions:** The agent navigates to a site. The vault automatically injects stored cookies for matching domains, maintaining a logged-in session without the agent handling any cookie data.
+
 After adding a credential, changes take effect immediately — no gateway restart needed.
 
 If the plugin and resolver binary get out of sync after an update, you'll get a clear warning with the exact command to fix it.
@@ -60,9 +65,12 @@ If the plugin and resolver binary get out of sync after an update, you'll get a 
 | Command | Description |
 |---------|-------------|
 | `vault init` | Initialize vault |
-| `vault add <tool> --key <cred>` | Add a credential (auto-detects format, configures injection + scrubbing) |
-| `vault add <tool> --type browser-password --domain <d> --key <p>` | Add a domain-pinned browser password |
-| `vault add <tool> --type browser-cookie --domain <d>` | Add browser cookies (paste JSON or Netscape format) |
+| `vault add <tool> --key <cred>` | Add a credential (interactive usage selection: API, CLI, browser login, browser session) |
+| `vault add <tool> --key <cred> --use api --url <pattern> [--header <name>] [--no-bearer]` | Non-interactive API header injection |
+| `vault add <tool> --key <cred> --use cli --command <name> --env <var>` | Non-interactive CLI env injection |
+| `vault add <tool> --key <cred> --use browser-login --domain <domain>` | Domain-pinned browser password flow |
+| `vault add <tool> --key '<cookie-json>' --use browser-session --domain <domain>` | Browser session with inline cookie JSON |
+| `vault add <tool> --key /path/to/cookies.json --use browser-session --domain <domain>` | Browser session with cookie file |
 | `vault list` | Show all stored credentials and status |
 | `vault show <tool>` | Show credential details and injection config |
 | `vault test <tool>` | Verify injection and scrubbing work end-to-end |
@@ -73,6 +81,15 @@ If the plugin and resolver binary get out of sync after an update, you'll get a 
 | `vault remove <tool> --purge` | Fully remove credential + all config |
 | `vault audit` | Security audit (permissions, rotation, resolver status) |
 | `vault logs` | View audit log (`--tool`, `--type`, `--last`, `--stats`, `--json`) |
+
+### `vault add` flags
+
+- `--use <types>`: comma-separated `api`, `cli`, `browser-login`, `browser-session`
+- API flags: `--url`, `--header`, `--no-bearer`
+- CLI flags: `--command`, `--env`
+- Browser flags: `--domain`
+- Scrubbing: `--scrub-pattern <regex>`
+- Automation: `--yes` (strict: requires known format/template, or `--use` + required flags)
 
 ## Platform Support
 
@@ -89,7 +106,7 @@ If the plugin and resolver binary get out of sync after an update, you'll get a 
 - **[Architecture](docs/ARCHITECTURE.md)** — Component map, hook pipeline, Rust resolver deep dive
 - **[Specification](docs/SPEC.md)** — Encryption scheme, hook behavior, CLI reference, config schemas
 - **[Threat Model](docs/THREAT-MODEL.md)** — What we defend against, what we don't, and design trade-offs
-- **[Testing](docs/TESTING.md)** — 610 tests: unit, integration, adversarial, performance, install verification
+- **[Testing](docs/TESTING.md)** — ~695 tests across 36 files: unit, integration, adversarial, browser E2E, hook-level E2E, performance, install verification
 - **[Security Audit](docs/SECURITY-AUDIT.md)** — Validation methodology, results, findings
 - **[Install Verification](docs/INSTALL-VERIFICATION.md)** — Clean-machine Docker testing on Debian 12 and Ubuntu 24.04
 

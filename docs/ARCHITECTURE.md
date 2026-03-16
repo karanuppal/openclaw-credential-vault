@@ -77,7 +77,7 @@ sequenceDiagram
 
 ## Component Map
 
-The plugin consists of 12 TypeScript modules and a Rust binary:
+The plugin consists of 12 TypeScript modules and a Rust binary. The so[VAULT:gmail-app]udes 36 test files with ~695 tests.
 
 ### Core Pipeline
 
@@ -93,14 +93,14 @@ The plugin consists of 12 TypeScript modules and a Rust binary:
 
 | Module | Purpose | Key Exports |
 |--------|---------|-------------|
-| **cli.ts** | All `openclaw vault` CLI commands: init, add, list, show, rotate, remove, test, audit, logs. Includes tool-name validation (path traversal protection) and interactive prompting. | `registerCliCommands()` |
-| **guesser.ts** | Credential format detection. Analyzes a credential value on `vault add` to detect known prefixes (Stripe, GitHub, etc.), JWTs, JSON blobs, passwords, and generic API keys. Suggests injection rules and scrub patterns. | `guessCredentialFormat()`, `buildToolConfigFromGuess()` |
+| **cli.ts** | All `openclaw vault` CLI commands: init, add, list, show, rotate, remove, test, audit, logs. The `add` command features a usage-type menu (API calls / CLI tool / Browser login / Browser session) for interactive mode, and `--use` flag with sub-flags for non-interactive mode. Includes tool-name validation (path traversal protection), known tool-name template matching (e.g., resy), and `--yes` strict validation. | `registerCliCommands()` |
+| **guesser.ts** | Credential format detection and usage-based config builder. Analyzes a credential value on `vault add` to detect known prefixes (Stripe, GitHub, etc.), JWTs, JSON blobs, passwords, and generic API keys. Builds `ToolConfig` from structured `UsageSelection` (api-calls, cli-tool, browser-login, browser-session). Known tool-name templates (e.g., resy) provide auto-configuration with `--yes`. | `guessCredentialFormat()`, `buildToolConfig()` |
 
 ### Browser Support
 
 | Module | Purpose | Key Exports |
 |--------|---------|-------------|
-| **browser.ts** | Browser credential support. Domain-pinned password injection (`$vault:` placeholder resolution), cookie jar management (parse, filter, inject), and domain matching logic. | `resolveBrowserPassword()`, `shouldInjectCookies()`, `parseCookieJson()` |
+| **browser.ts** | Browser credential support. Domain-pinned password injection (`$vault:` placeholder resolution with `browserTabUrls` cache lookup for domain validation), cookie jar management (parse, filter, inject, expiry handling), and domain matching logic. Supports `browser-password` (fill/type with domain pinning) and `browser-cookie` (auto-inject on navigate). | `resolveBrowserPassword()`, `findBrowserPasswordRule()`, `findAllBrowserCookieRules()`, `shouldInjectCookies()`, `filterCookiesByDomain()`, `removeExpiredCookies()` |
 
 ### Observability
 
@@ -222,7 +222,7 @@ The vault registers handlers on 7 OpenClaw plugin hooks. Here's the complete flo
 | Hook | Priority | Mode | Purpose |
 |------|----------|------|---------|
 | `before_tool_call` | 10 (last) | Mutate | Inject credentials into tool params; scrub write/edit content |
-| `after_tool_call` | 1 (first) | Observe | Audit logging; env var cleanup |
+| `after_tool_call` | 1 (first) | Observe | Audit logging; browser tab URL caching from results |
 | `tool_result_persist` | 1 (first) | Mutate | Scrub tool results before transcript write |
 | `before_message_write` | 1 (first) | Mutate | Scrub all messages before transcript |
 | `message_sending` | 1 (first) | Mutate | Scrub outbound messages to user |
@@ -231,12 +231,22 @@ The vault registers handlers on 7 OpenClaw plugin hooks. Here's the complete flo
 
 ### before_tool_call (injection + write/edit scrubbing)
 
-This is the most complex hook. It handles four distinct flows:
+This is the most complex hook. It handles five distinct flows:
 
 1. **Write/edit scrubbing**: If the tool is `write` or `edit`, scrub credential patterns from the content parameter before the file is written
-2. **Browser password**: If the tool is `browser` and text contains `$vault:name`, resolve the placeholder after domain-pin validation
+2. **Browser password**: If the tool is `browser` and text contains `$vault:name`, resolve the placeholder after domain-pin validation against the tab's current URL (from `browserTabUrls` cache — see below)
 3. **Browser cookies**: If the tool is `browser` with `navigate` action, inject matching cookies via `_vaultCookies` param
-4. **Standard injection**: For `exec` and `web_fetch`, pattern-match the command/URL against configured rules and inject credentials as env vars (via `params.env`) or HTTP headers. For exec, a Perl stdout scrubber is also wrapped around the command to replace credential values in subprocess output before the exec tool captures it.
+4. **Browser URL caching (navigate)**: When the browser tool is called with `navigate` action, the target URL is cached in `state.browserTabUrls` keyed by `targetId`. This is needed because subsequent `act`/`type` calls don't include the tab URL — only the `targetId`. The cached URL is used for domain-pin validation.
+5. **Standard injection**: For `exec` and `web_fetch`, pattern-match the command/URL against configured rules and inject credentials as env vars (via `params.env`) or HTTP headers. For exec, a Perl stdout scrubber is also wrapped around the command to replace credential values in subprocess output before the exec tool captures it.
+
+### after_tool_call (audit + tab URL caching)
+
+This observe-only hook performs two functions:
+
+1. **Audit logging**: Logs credential access events for all credentials injected in the current tool call
+2. **Browser tab URL caching from results**: Extracts the `url` and `targetId` from browser tool results and caches them in `state.browserTabUrls`. This handles the case where a navigate result returns the final URL (after redirects) which may differ from the requested URL.
+
+**OpenClaw result format parsing:** OpenClaw wraps tool results in `{content: [...], details: {...}}`. The actual structured data (`url`, `targetId`) lives in the `details` object, not at the top level. The handler checks `details` first, then falls back to parsing `content[0].text` as JSON (for older/alternative formats), then the raw result object. This three-tier extraction was added to fix a bug where tab URLs weren't being cached because the handler expected flat `{url, targetId}` at the top level.
 
 ### Scrubbing Layers
 
@@ -285,6 +295,7 @@ All hook handlers are wrapped in try-catch blocks that:
 
 Decrypted credentials are cached in memory to avoid repeated Argon2id derivation (which is intentionally expensive — 64 MiB memory, 3 iterations):
 
+- **Browser tab URL cache** (`browserTabUrls`): Maps `targetId` → last-known URL for browser tabs. Populated during `before_tool_call` (on navigate) and `after_tool_call` (from result details). Used for domain-pin validation when `act`/`type` tool calls don't include the tab URL.
 - **TTL**: 15 minutes — after which credentials are re-decrypted on next access
 - **Eviction**: Expired entries are evicted on access, not proactively
 - **Hot-reload preservation**: On SIGUSR2 config reload, the cache is preserved if the passphrase hasn't changed
