@@ -345,7 +345,7 @@ async function handleVaultAddWithUse(
         return;
       }
     } else {
-      console.error("Error: --key is required for --use browser-session (provide cookie JSON, raw name=value string, or path to cookie file)");
+      console.error("Error: --key is required for --use browser-session (provide cookie JSON, name=value string, or path to cookie file). For a plain cookie value, use the interactive flow (omit --use) and select option 4.");
       return;
     }
 
@@ -794,6 +794,15 @@ export function registerCliCommands(program: CliProgram): void {
               cookieContent = keyTrimmed;
               cookieIsInline = true;
               cookieIsRaw = true;
+            } else if (keyTrimmed.length > 0) {
+              // Plain cookie value — ask for the cookie name
+              const cookieName = await promptUser("  Cookie name: ");
+              const name = cookieName.trim();
+              if (name) {
+                cookieContent = `${name}=${keyTrimmed}`;
+                cookieIsInline = true;
+                cookieIsRaw = true;
+              }
             }
           }
 

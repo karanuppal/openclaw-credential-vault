@@ -194,6 +194,30 @@ describe("vault add interactive flow", () => {
     expect(tool.scrub.patterns.length).toBeGreaterThan(0);
   });
 
+  it("interactive flow: selects option 4 with --key as plain cookie value -> prompts for cookie name", async () => {
+    withPromptAnswers([
+      "4",                      // choose browser session
+      ".gumroad.com",           // cookie domain
+      "_gumroad_app_session",   // cookie name (prompted because --key has no =)
+      "n",                      // add custom scrub regex?
+      "y",                      // save
+    ]);
+
+    const program = createMockProgram();
+    registerCliCommands(program as any);
+    const logs: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args) => logs.push(args.join(" ")));
+
+    await getAddAction(program)("gumroad-plain-value", { key: "dfjhjfhksd" });
+
+    const cfg = readConfig(tmpDir).tools["gumroad-plain-value"];
+    expect(cfg).toBeDefined();
+    expect(cfg.inject[0].type).toBe("browser-cookie");
+    expect(cfg.inject[0].domainPin).toEqual([".gumroad.com"]);
+    // Should warn about shell history since inline
+    expect(logs.join("\n")).toContain("shell history");
+  });
+
   it("interactive flow: selects option 4 (browser-session) with --key containing inline cookie JSON -> skips cookie prompt", async () => {
     const inlineCookies = JSON.stringify([
       { name: "sid", value: "test-cookie", domain: ".example.com", path: "/", expires: -1, httpOnly: true, secure: true, sameSite: "Lax" },
