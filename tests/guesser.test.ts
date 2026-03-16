@@ -187,18 +187,18 @@ describe("guessCredentialFormat — Heuristic paths", () => {
     expect(result.format).toBe("jwt");
     expect(result.confidence).toBe("medium");
     expect(result.needsPrompt).toBe(true);
-    expect(result.promptHints.askApiUrl).toBe(true);
-    // Should suggest Bearer header injection
-    const webFetch = result.suggestedInject.find((r) => r.tool === "web_fetch");
-    expect(webFetch).toBeDefined();
-    expect(webFetch!.headers).toHaveProperty("Authorization");
-    expect(webFetch!.headers!.Authorization).toContain("Bearer");
+    // JWT no longer pre-builds injection rules — user selects via menu
+    expect(result.suggestedInject).toHaveLength(0);
+    // JWT should suggest a scrub pattern
+    expect(result.suggestedScrub.patterns.length).toBeGreaterThan(0);
+    // JWT should suggest API calls usage
+    expect(result.suggestedUsage).toEqual([1]);
   });
 
-  it("detects JWT and asks for service name when no toolName provided", () => {
+  it("detects JWT without toolName — still no suggestedInject", () => {
     const jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
     const result = guessCredentialFormat(jwt);
-    expect(result.promptHints.askServiceName).toBe(true);
+    expect(result.suggestedInject).toHaveLength(0);
   });
 
   it("detects short password", () => {
@@ -206,8 +206,7 @@ describe("guessCredentialFormat — Heuristic paths", () => {
     expect(result.format).toBe("password");
     expect(result.confidence).toBe("medium");
     expect(result.needsPrompt).toBe(true);
-    expect(result.promptHints.askServiceName).toBe(true);
-    expect(result.promptHints.askInjectionType).toBe(true);
+    expect(result.suggestedUsage).toEqual([3]);
   });
 
   it("detects JSON blob as cookies/OAuth", () => {
@@ -216,7 +215,7 @@ describe("guessCredentialFormat — Heuristic paths", () => {
     expect(result.format).toBe("json-blob");
     expect(result.confidence).toBe("medium");
     expect(result.needsPrompt).toBe(true);
-    expect(result.promptHints.askInjectionType).toBe(true);
+    expect(result.suggestedUsage).toEqual([4]);
   });
 
   it("detects JSON array (cookies) as json-blob", () => {
@@ -226,16 +225,17 @@ describe("guessCredentialFormat — Heuristic paths", () => {
   });
 
   it("detects long random string as generic API key", () => {
-    const key = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEF";
+    const key = "ZXCVBNMASDFGHJKLQWERTYUIOP1234567890ab";
     const result = guessCredentialFormat(key, "acme-service");
     expect(result.format).toBe("generic-api-key");
     expect(result.confidence).toBe("low");
     expect(result.needsPrompt).toBe(true);
-    expect(result.promptHints.askApiUrl).toBe(true);
-    // Should suggest exec-env injection with tool name in env var
-    const execRule = result.suggestedInject.find((r) => r.tool === "exec");
-    expect(execRule).toBeDefined();
-    expect(execRule!.env).toHaveProperty("ACME_SERVICE_API_KEY");
+    // generic-api-key no longer pre-builds injection rules — user selects via menu
+    expect(result.suggestedInject).toHaveLength(0);
+    // Should still have a scrub pattern
+    expect(result.suggestedScrub.patterns.length).toBeGreaterThan(0);
+    // Should suggest API calls usage
+    expect(result.suggestedUsage).toEqual([1]);
   });
 
   it("falls back to unknown for unrecognizable formats", () => {

@@ -36,31 +36,18 @@ export interface GuessResult {
   confidence: "high" | "medium" | "low";
   /** Known tool name if matched to registry (e.g. "stripe", "github") */
   knownToolName: string | null;
-  /** Suggested injection rules */
+  /** Suggested injection rules — only populated for high-confidence known-prefix matches */
   suggestedInject: InjectionRule[];
   /** Suggested scrub config */
   suggestedScrub: ScrubConfig;
   /** Whether interactive prompting is recommended */
   needsPrompt: boolean;
-  /** Prompt hints for interactive flow */
-  promptHints: PromptHints;
   /**
    * Suggested usage type numbers for the new interactive flow menu:
    *   1 = API calls, 2 = CLI tool, 3 = Browser login, 4 = Browser session
    * Empty array means no default suggestion.
    */
   suggestedUsage: number[];
-}
-
-export interface PromptHints {
-  /** Ask for service name? */
-  askServiceName: boolean;
-  /** Ask for API base URL? */
-  askApiUrl: boolean;
-  /** Ask for CLI tool name? */
-  askCliTool: boolean;
-  /** Ask for injection type? */
-  askInjectionType: boolean;
 }
 
 // ─── Known Prefix Definitions ───────────────────────────────────────────────
@@ -164,12 +151,6 @@ export function guessCredentialFormat(value: string, toolName?: string): GuessRe
         suggestedInject: knownTool ? [...knownTool.inject] : [],
         suggestedScrub: knownTool ? { ...knownTool.scrub } : { patterns: [generateScrubPattern(value)] },
         needsPrompt: false,
-        promptHints: {
-          askServiceName: false,
-          askApiUrl: false,
-          askCliTool: false,
-          askInjectionType: false,
-        },
         suggestedUsage: [], // auto-configured from known template
       };
     }
@@ -183,21 +164,9 @@ export function guessCredentialFormat(value: string, toolName?: string): GuessRe
       displayName: "JWT token (three dot-separated base64 segments)",
       confidence: "medium",
       knownToolName: null,
-      suggestedInject: [
-        {
-          tool: "web_fetch",
-          urlMatch: toolName ? `*.${toolName}.*/*` : "*",
-          headers: { Authorization: `Bearer $vault:${toolName ?? "unknown"}` },
-        },
-      ],
+      suggestedInject: [], // user selects usage via menu
       suggestedScrub: { patterns: [scrubPattern] },
       needsPrompt: true,
-      promptHints: {
-        askServiceName: !toolName,
-        askApiUrl: true,
-        askCliTool: true,
-        askInjectionType: false, // JWT is almost always Bearer
-      },
       suggestedUsage: [1], // API calls (Bearer header)
     };
   }
@@ -212,12 +181,6 @@ export function guessCredentialFormat(value: string, toolName?: string): GuessRe
       suggestedInject: [],
       suggestedScrub: { patterns: [] },
       needsPrompt: true,
-      promptHints: {
-        askServiceName: true,
-        askApiUrl: true,
-        askCliTool: false,
-        askInjectionType: true,
-      },
       suggestedUsage: [4], // Browser session (cookie jar)
     };
   }
@@ -232,42 +195,21 @@ export function guessCredentialFormat(value: string, toolName?: string): GuessRe
       suggestedInject: [],
       suggestedScrub: { patterns: [] },
       needsPrompt: true,
-      promptHints: {
-        askServiceName: true,
-        askApiUrl: false,
-        askCliTool: false,
-        askInjectionType: true,
-      },
       suggestedUsage: [3], // Browser login (password fill)
     };
   }
 
   // 5. Long random string (low confidence — generic API key)
   if (isGenericApiKey(value)) {
-    const envVarName = toolName
-      ? `${toolName.toUpperCase().replace(/-/g, "_")}_API_KEY`
-      : "API_KEY";
     const scrubPattern = generateScrubPattern(value);
     return {
       format: "generic-api-key",
       displayName: "Long random string (likely an API key)",
       confidence: "low",
       knownToolName: null,
-      suggestedInject: [
-        {
-          tool: "exec",
-          commandMatch: toolName ? `${toolName}*|curl*${toolName}*` : "*",
-          env: { [envVarName]: `$vault:${toolName ?? "unknown"}` },
-        },
-      ],
+      suggestedInject: [], // user selects usage via menu
       suggestedScrub: { patterns: [scrubPattern] },
       needsPrompt: true,
-      promptHints: {
-        askServiceName: !toolName,
-        askApiUrl: true,
-        askCliTool: true,
-        askInjectionType: false,
-      },
       suggestedUsage: [1], // API calls
     };
   }
@@ -281,12 +223,6 @@ export function guessCredentialFormat(value: string, toolName?: string): GuessRe
     suggestedInject: [],
     suggestedScrub: { patterns: [generateScrubPattern(value)] },
     needsPrompt: true,
-    promptHints: {
-      askServiceName: true,
-      askApiUrl: true,
-      askCliTool: true,
-      askInjectionType: true,
-    },
     suggestedUsage: [], // no default suggestion
   };
 }
