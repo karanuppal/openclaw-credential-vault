@@ -86,7 +86,7 @@ describe("browser-session end-to-end", () => {
     await getAddAction(program)("gumroad-session", {
       use: "browser-session",
       domain: ".gumroad.com",
-      cookieFile,
+      key: cookieFile,
       yes: true,
     });
 
@@ -115,7 +115,7 @@ describe("browser-session end-to-end", () => {
     await getAddAction(program)("gumroad-delete", {
       use: "browser-session",
       domain: ".gumroad.com",
-      cookieFile,
+      key: cookieFile,
     });
 
     expect(fs.existsSync(cookieFile)).toBe(false);
@@ -133,7 +133,7 @@ describe("browser-session end-to-end", () => {
     await getAddAction(program)("gumroad-keep", {
       use: "browser-session",
       domain: ".gumroad.com",
-      cookieFile,
+      key: cookieFile,
     });
 
     expect(fs.existsSync(cookieFile)).toBe(true);
@@ -188,7 +188,7 @@ describe("browser-session end-to-end", () => {
     await getAddAction(program)("gumroad-yes-warn", {
       use: "browser-session",
       domain: ".gumroad.com",
-      cookieFile,
+      key: cookieFile,
       yes: true,
     });
 

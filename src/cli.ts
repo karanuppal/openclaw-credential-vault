@@ -270,7 +270,6 @@ async function handleVaultAddWithUse(
     command?: string;
     env?: string;
     domain?: string;
-    cookieFile?: string;
     scrubPattern?: string;
     yes?: boolean;
     [key: string]: unknown;
@@ -298,7 +297,7 @@ async function handleVaultAddWithUse(
         return;
       }
       if (type === "browser-session") {
-        const hasCookieData = options.cookieFile ||
+        const hasCookieData =
           (options.key && (options.key.startsWith("[") || options.key.startsWith("{"))) ||
           (options.key && fs.existsSync(options.key));
         if (!options.domain || !hasCookieData) {
@@ -321,20 +320,12 @@ async function handleVaultAddWithUse(
       return;
     }
 
-    // Determine cookie source: --cookie-file takes priority, then --key as inline JSON or file path
+    // Determine cookie source from --key (inline JSON or file path)
     let fileContent: string;
     let cookieSourcePath: string | null = null;
     let cookieIsInline = false;
 
-    if (options.cookieFile) {
-      cookieSourcePath = options.cookieFile;
-      try {
-        fileContent = fs.readFileSync(options.cookieFile, "utf-8");
-      } catch (err) {
-        console.error(`Error reading cookie file: ${(err as Error).message}`);
-        return;
-      }
-    } else if (options.key && (options.key.startsWith("[") || options.key.startsWith("{"))) {
+    if (options.key && (options.key.startsWith("[") || options.key.startsWith("{"))) {
       // Inline cookie JSON provided via --key
       fileContent = options.key;
       cookieIsInline = true;
@@ -348,7 +339,7 @@ async function handleVaultAddWithUse(
         return;
       }
     } else {
-      console.error("Error: --cookie-file is required for --use browser-session (or provide inline cookie JSON via --key)");
+      console.error("Error: --key is required for --use browser-session (provide inline cookie JSON or a path to a cookie file)");
       return;
     }
 
@@ -537,7 +528,7 @@ export function registerCliCommands(program: CliProgram): void {
     .command("add")
     .description("Add a credential to the vault")
     .argument("<tool>", "Tool name (e.g., gumroad, stripe, github)")
-    .option("--key <credential>", "The credential/API key to store")
+    .option("--key <credential>", "Credential value (API key, password, cookie JSON, or path to cookie file)")
     .option("--use <types>", "Usage types (comma-separated): api,cli,browser-login,browser-session")
     .option("--url <pattern>", "URL match pattern for API header injection")
     .option("--header <name>", "HTTP header name for API injection (default: Authorization)")
@@ -545,7 +536,7 @@ export function registerCliCommands(program: CliProgram): void {
     .option("--command <name>", "CLI command name for command matching")
     .option("--env <name>", "Environment variable name for CLI injection")
     .option("--domain <domain>", "Domain for browser-login or browser-session")
-    .option("--cookie-file <path>", "Path to cookie file for browser-session (JSON or Netscape)")
+
     .option("--scrub-pattern <regex>", "Add a regex pattern for output scrubbing")
     .option("--yes", "Skip confirmation prompt (requires known format or --use with all required flags)")
     .action(async (tool: string, options: {
@@ -557,7 +548,6 @@ export function registerCliCommands(program: CliProgram): void {
       command?: string;
       env?: string;
       domain?: string;
-      cookieFile?: string;
       scrubPattern?: string;
       yes?: boolean;
       // Legacy/passthrough fields

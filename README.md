@@ -64,8 +64,8 @@ If the plugin and resolver binary get out of sync after an update, you'll get a 
 | `vault add <tool> --key <cred> --use api --url <pattern> [--header <name>] [--no-bearer]` | Non-interactive API header injection |
 | `vault add <tool> --key <cred> --use cli --command <name> --env <var>` | Non-interactive CLI env injection |
 | `vault add <tool> --key <cred> --use browser-login --domain <domain>` | Domain-pinned browser password flow |
-| `vault add <tool> --use browser-session --domain <domain> --cookie-file <path>` | Browser session cookie import from file |
-| `vault add <tool> --key '<cookie-json>' --use browser-session --domain <domain>` | Browser session cookie import from inline JSON |
+| `vault add <tool> --key '<cookie-json>' --use browser-session --domain <domain>` | Browser session with inline cookie JSON |
+| `vault add <tool> --key /path/to/cookies.json --use browser-session --domain <domain>` | Browser session with cookie file |
 | `vault list` | Show all stored credentials and status |
 | `vault show <tool>` | Show credential details and injection config |
 | `vault test <tool>` | Verify injection and scrubbing work end-to-end |
@@ -82,7 +82,7 @@ If the plugin and resolver binary get out of sync after an update, you'll get a 
 - `--use <types>`: comma-separated `api`, `cli`, `browser-login`, `browser-session`
 - API flags: `--url`, `--header`, `--no-bearer`
 - CLI flags: `--command`, `--env`
-- Browser flags: `--domain`, `--cookie-file`
+- Browser flags: `--domain`
 - Scrubbing: `--scrub-pattern <regex>`
 - Automation: `--yes` (strict: requires known format/template, or `--use` + required flags)
 

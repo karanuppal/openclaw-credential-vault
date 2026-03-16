@@ -125,7 +125,7 @@ describe("vault add --use parsing", () => {
 
     const program = createMockProgram();
     registerCliCommands(program as any);
-    await getAddAction(program)("svc-session", { use: "browser-session", domain: ".gumroad.com", cookieFile: cookiePath, yes: true });
+    await getAddAction(program)("svc-session", { use: "browser-session", domain: ".gumroad.com", key: cookiePath, yes: true });
 
     const inject = readConfig(tmpDir).tools["svc-session"].inject;
     expect(inject[0].type).toBe("browser-cookie");
@@ -156,7 +156,7 @@ describe("vault add --use parsing", () => {
       command: "svc",
       env: "SVC_KEY",
       domain: ".gumroad.com",
-      cookieFile: cookiePath,
+      key: cookiePath,
       yes: true,
     });
 
@@ -211,19 +211,19 @@ describe("vault add --use parsing", () => {
       expect(errors.some((e) => e.includes("--yes requires either a known credential format or --use with all required flags"))).toBe(true);
     });
 
-    it("--yes with --use browser-session + --domain + --cookie-file succeeds", async () => {
+    it("--yes with --use browser-session + --domain + --key (file path) succeeds", async () => {
       const cookiePath = path.join(tmpDir, "cookies-yes.json");
       fs.writeFileSync(cookiePath, JSON.stringify([{ name: "sid", value: "v1", domain: ".gumroad.com", path: "/", expires: -1, httpOnly: true, secure: true, sameSite: "Lax" }]));
 
       const program = createMockProgram();
       registerCliCommands(program as any);
-      await getAddAction(program)("session-ok", { use: "browser-session", domain: ".gumroad.com", cookieFile: cookiePath, yes: true });
+      await getAddAction(program)("session-ok", { use: "browser-session", domain: ".gumroad.com", key: cookiePath, yes: true });
 
       expect(readConfig(tmpDir).tools["session-ok"]).toBeDefined();
       expect(errors.length).toBe(0);
     });
 
-    it("--yes with --use browser-session missing --cookie-file errors", async () => {
+    it("--yes with --use browser-session missing --key errors", async () => {
       const program = createMockProgram();
       registerCliCommands(program as any);
       await getAddAction(program)("session-missing", { use: "browser-session", domain: ".gumroad.com", yes: true });
