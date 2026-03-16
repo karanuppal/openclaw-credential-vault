@@ -905,13 +905,14 @@ export function registerCliCommands(program: CliProgram): void {
             usage.scrubPatterns.push(pattern);
           }
         }
-      }
-
-      const addScrub = await promptUser("  Add a regex pattern to also catch similar credentials? [N/y]: ");
-      if (addScrub.toLowerCase() === "y" || addScrub.toLowerCase() === "yes") {
-        const pattern = await promptUser("  Regex pattern: ");
-        if (pattern.trim()) {
-          usage.scrubPatterns.push(pattern.trim());
+      } else {
+        // Only ask for manual regex if no patterns were auto-detected
+        const addScrub = await promptUser("  Add a regex pattern to also catch similar credentials? [N/y]: ");
+        if (addScrub.toLowerCase() === "y" || addScrub.toLowerCase() === "yes") {
+          const pattern = await promptUser("  Regex pattern: ");
+          if (pattern.trim()) {
+            usage.scrubPatterns.push(pattern.trim());
+          }
         }
       }
       if (options.scrubPattern) {

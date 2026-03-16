@@ -98,7 +98,6 @@ describe("vault add interactive flow", () => {
       "",                  // header -> default Authorization
       "",                  // format -> default Bearer $token
       "n",                 // include detected scrub pattern? (generic-api-key has one)
-      "n",                 // add custom scrub regex?
       "y",                 // save
     ]);
 
@@ -136,7 +135,6 @@ describe("vault add interactive flow", () => {
       "gh",
       "GITHUB_TOKEN",
       "n",                 // include detected scrub pattern? (generic-api-key has one)
-      "n",                 // add custom scrub regex?
       "y",
     ]);
 
@@ -160,7 +158,6 @@ describe("vault add interactive flow", () => {
       "multi",
       "MULTI_TOKEN",
       "n",                 // include detected scrub pattern? (generic-api-key has one)
-      "n",                 // add custom scrub regex?
       "y",
     ]);
 
@@ -180,7 +177,6 @@ describe("vault add interactive flow", () => {
       "",                  // header -> default Authorization
       "",                  // format -> default Bearer $token
       "y",                 // include detected scrub pattern? (accept)
-      "n",                 // add custom scrub regex?
       "y",                 // save
     ]);
 
@@ -253,7 +249,6 @@ describe("vault add interactive flow", () => {
       "",
       "",
       "n",                 // include detected scrub pattern? (generic-api-key has one)
-      "n",                 // add custom scrub regex?
       "n",                 // save
     ]);
 
