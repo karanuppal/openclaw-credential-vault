@@ -7,7 +7,7 @@
  * 3. Suggested injection config (type, command/URL match, scrub pattern)
  */
 
-import { InjectionRule, ScrubConfig, KnownToolDef } from "./types.js";
+import { InjectionRule, ScrubConfig, KnownToolDef, UsageSelection } from "./types.js";
 import { KNOWN_TOOLS, generateScrubPattern } from "./registry.js";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -36,25 +36,18 @@ export interface GuessResult {
   confidence: "high" | "medium" | "low";
   /** Known tool name if matched to registry (e.g. "stripe", "github") */
   knownToolName: string | null;
-  /** Suggested injection rules */
+  /** Suggested injection rules — only populated for high-confidence known-prefix matches */
   suggestedInject: InjectionRule[];
   /** Suggested scrub config */
   suggestedScrub: ScrubConfig;
   /** Whether interactive prompting is recommended */
   needsPrompt: boolean;
-  /** Prompt hints for interactive flow */
-  promptHints: PromptHints;
-}
-
-export interface PromptHints {
-  /** Ask for service name? */
-  askServiceName: boolean;
-  /** Ask for API base URL? */
-  askApiUrl: boolean;
-  /** Ask for CLI tool name? */
-  askCliTool: boolean;
-  /** Ask for injection type? */
-  askInjectionType: boolean;
+  /**
+   * Suggested usage type numbers for the new interactive flow menu:
+   *   1 = API calls, 2 = CLI tool, 3 = Browser login, 4 = Browser session
+   * Empty array means no default suggestion.
+   */
+  suggestedUsage: number[];
 }
 
 // ─── Known Prefix Definitions ───────────────────────────────────────────────
@@ -158,12 +151,7 @@ export function guessCredentialFormat(value: string, toolName?: string): GuessRe
         suggestedInject: knownTool ? [...knownTool.inject] : [],
         suggestedScrub: knownTool ? { ...knownTool.scrub } : { patterns: [generateScrubPattern(value)] },
         needsPrompt: false,
-        promptHints: {
-          askServiceName: false,
-          askApiUrl: false,
-          askCliTool: false,
-          askInjectionType: false,
-        },
+        suggestedUsage: [], // auto-configured from known template
       };
     }
   }
@@ -176,21 +164,10 @@ export function guessCredentialFormat(value: string, toolName?: string): GuessRe
       displayName: "JWT token (three dot-separated base64 segments)",
       confidence: "medium",
       knownToolName: null,
-      suggestedInject: [
-        {
-          tool: "web_fetch",
-          urlMatch: toolName ? `*.${toolName}.*/*` : "*",
-          headers: { Authorization: `Bearer $vault:${toolName ?? "unknown"}` },
-        },
-      ],
+      suggestedInject: [], // user selects usage via menu
       suggestedScrub: { patterns: [scrubPattern] },
       needsPrompt: true,
-      promptHints: {
-        askServiceName: !toolName,
-        askApiUrl: true,
-        askCliTool: true,
-        askInjectionType: false, // JWT is almost always Bearer
-      },
+      suggestedUsage: [1], // API calls (Bearer header)
     };
   }
 
@@ -204,12 +181,7 @@ export function guessCredentialFormat(value: string, toolName?: string): GuessRe
       suggestedInject: [],
       suggestedScrub: { patterns: [] },
       needsPrompt: true,
-      promptHints: {
-        askServiceName: true,
-        askApiUrl: true,
-        askCliTool: false,
-        askInjectionType: true,
-      },
+      suggestedUsage: [4], // Browser session (cookie jar)
     };
   }
 
@@ -223,41 +195,22 @@ export function guessCredentialFormat(value: string, toolName?: string): GuessRe
       suggestedInject: [],
       suggestedScrub: { patterns: [] },
       needsPrompt: true,
-      promptHints: {
-        askServiceName: true,
-        askApiUrl: false,
-        askCliTool: false,
-        askInjectionType: true,
-      },
+      suggestedUsage: [3], // Browser login (password fill)
     };
   }
 
   // 5. Long random string (low confidence — generic API key)
   if (isGenericApiKey(value)) {
-    const envVarName = toolName
-      ? `${toolName.toUpperCase().replace(/-/g, "_")}_API_KEY`
-      : "API_KEY";
     const scrubPattern = generateScrubPattern(value);
     return {
       format: "generic-api-key",
       displayName: "Long random string (likely an API key)",
       confidence: "low",
       knownToolName: null,
-      suggestedInject: [
-        {
-          tool: "exec",
-          commandMatch: toolName ? `${toolName}*|curl*${toolName}*` : "*",
-          env: { [envVarName]: `$vault:${toolName ?? "unknown"}` },
-        },
-      ],
+      suggestedInject: [], // user selects usage via menu
       suggestedScrub: { patterns: [scrubPattern] },
       needsPrompt: true,
-      promptHints: {
-        askServiceName: !toolName,
-        askApiUrl: true,
-        askCliTool: true,
-        askInjectionType: false,
-      },
+      suggestedUsage: [1], // API calls
     };
   }
 
@@ -270,12 +223,7 @@ export function guessCredentialFormat(value: string, toolName?: string): GuessRe
     suggestedInject: [],
     suggestedScrub: { patterns: [generateScrubPattern(value)] },
     needsPrompt: true,
-    promptHints: {
-      askServiceName: true,
-      askApiUrl: true,
-      askCliTool: true,
-      askInjectionType: true,
-    },
+    suggestedUsage: [], // no default suggestion
   };
 }
 
@@ -335,117 +283,64 @@ export function formatGuessDisplay(guess: GuessResult, toolName: string): string
   return lines.join("\n");
 }
 
+// ─── New buildToolConfig ─────────────────────────────────────────────────────
+
 /**
- * Build a ToolConfig from a GuessResult, applying any user overrides.
+ * Build a ToolConfig from a structured UsageSelection.
+ * Replaces buildToolConfigFromGuess for the new interactive/non-interactive flow.
+ *
+ * Each usage type maps to exactly one InjectionRule — no find-and-modify logic.
+ * The credential VALUE is never stored here; only $vault: placeholders.
  */
-export function buildToolConfigFromGuess(
+export function buildToolConfig(
   toolName: string,
-  guess: GuessResult,
-  overrides?: {
-    apiUrl?: string;
-    cliTool?: string;
-    serviceName?: string;
-    envVarName?: string;
-    commandMatch?: string;
-  }
+  usage: UsageSelection
 ): { inject: InjectionRule[]; scrub: ScrubConfig } {
-  let inject = [...guess.suggestedInject];
-  let scrub = { patterns: [...guess.suggestedScrub.patterns] };
+  const inject: InjectionRule[] = [];
 
-  // Apply overrides
-  if (overrides?.apiUrl) {
-    const urlDomain = extractDomain(overrides.apiUrl);
-    // Add/update web_fetch rule
-    const existingWebFetch = inject.findIndex((r) => r.tool === "web_fetch");
-    const webFetchRule: InjectionRule = {
+  // API calls → web_fetch header injection
+  if (usage.apiCalls) {
+    const headerValue = usage.apiCalls.headerFormat.replace("$token", `$vault:${toolName}`);
+    inject.push({
       tool: "web_fetch",
-      urlMatch: `*${urlDomain}/*`,
-      headers: { Authorization: `Bearer $vault:${toolName}` },
-    };
-    if (existingWebFetch >= 0) {
-      inject[existingWebFetch] = webFetchRule;
-    } else {
-      inject.push(webFetchRule);
-    }
-
-    // Update exec commandMatch to include curl for this API
-    const existingExec = inject.findIndex((r) => r.tool === "exec");
-    if (existingExec >= 0) {
-      const current = inject[existingExec].commandMatch ?? "";
-      if (!current.includes(urlDomain)) {
-        inject[existingExec] = {
-          ...inject[existingExec],
-          commandMatch: current ? `${current}|curl*${urlDomain}*` : `curl*${urlDomain}*`,
-        };
-      }
-    }
+      urlMatch: usage.apiCalls.urlPattern,
+      headers: { [usage.apiCalls.headerName]: headerValue },
+    });
   }
 
-  if (overrides?.cliTool) {
-    const existingExec = inject.findIndex((r) => r.tool === "exec");
-    const envVarName = `${toolName.toUpperCase().replace(/-/g, "_")}_API_KEY`;
-    if (existingExec >= 0) {
-      const current = inject[existingExec].commandMatch ?? "";
-      if (!current.includes(overrides.cliTool)) {
-        inject[existingExec] = {
-          ...inject[existingExec],
-          commandMatch: current
-            ? `${overrides.cliTool}*|${current}`
-            : `${overrides.cliTool}*`,
-        };
-      }
-    } else {
-      inject.push({
-        tool: "exec",
-        commandMatch: `${overrides.cliTool}*|curl*${toolName}*`,
-        env: { [envVarName]: `$vault:${toolName}` },
-      });
-    }
+  // CLI tool → exec env injection
+  if (usage.cliTool) {
+    inject.push({
+      tool: "exec",
+      commandMatch: usage.cliTool.commandMatch,
+      env: { [usage.cliTool.envVar]: `$vault:${toolName}` },
+    });
   }
 
-  if (overrides?.envVarName) {
-    const existingExec = inject.findIndex((r) => r.tool === "exec");
-    if (existingExec >= 0 && inject[existingExec].env) {
-      const oldKey = Object.keys(inject[existingExec].env!)[0];
-      const value = inject[existingExec].env![oldKey];
-      delete inject[existingExec].env![oldKey];
-      inject[existingExec].env![overrides.envVarName] = value;
-    } else if (existingExec < 0) {
-      // No exec rule exists — create one from the override
-      const cmdMatch = overrides?.commandMatch ?? `${toolName}*`;
-      inject.push({
-        tool: "exec",
-        commandMatch: cmdMatch,
-        env: { [overrides.envVarName]: `$vault:${toolName}` },
-      });
-    }
+  // Browser login → browser-password with domain pinning
+  if (usage.browserLogin) {
+    inject.push({
+      tool: "browser",
+      type: "browser-password",
+      domainPin: [usage.browserLogin.domain],
+      method: "fill",
+    });
   }
 
-  if (overrides?.commandMatch) {
-    const existingExec = inject.findIndex((r) => r.tool === "exec");
-    if (existingExec >= 0) {
-      inject[existingExec].commandMatch = overrides.commandMatch;
-    } else if (!overrides?.envVarName) {
-      // No exec rule and envVarName didn't already create one — create with default env var
-      const defaultEnvVar = `${toolName.toUpperCase().replace(/-/g, "_")}_KEY`;
-      inject.push({
-        tool: "exec",
-        commandMatch: overrides.commandMatch,
-        env: { [defaultEnvVar]: `$vault:${toolName}` },
-      });
-    }
+  // Browser session → browser-cookie with domain pinning
+  if (usage.browserSession) {
+    inject.push({
+      tool: "browser",
+      type: "browser-cookie",
+      domainPin: [usage.browserSession.domain],
+      method: "cookie-jar",
+    });
   }
 
-  // Ensure scrub patterns are never empty — add a generic pattern based on credential length
-  // (Literal scrubbing of the exact value is handled separately by the scrubber cache at injection time)
-  if (scrub.patterns.length === 0) {
-    // For credentials with no detected pattern, we can't generate a useful regex.
-    // But we should signal that literal scrubbing is active.
-    // The scrubber automatically caches decrypted credential values for literal matching,
-    // so even without regex patterns, the credential value will be scrubbed from output.
-  }
-
-  return { inject, scrub };
+  return {
+    inject,
+    scrub: { patterns: usage.scrubPatterns },
+  };
 }
 
 /**

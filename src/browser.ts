@@ -293,6 +293,39 @@ export function parseNetscapeCookies(text: string): PlaywrightCookie[] {
 }
 
 /**
+ * Parse raw cookie string(s) in "name=value" or "name=value; name2=value2" format.
+ * Requires a domain to build the full PlaywrightCookie structure.
+ */
+export function parseRawCookieString(raw: string, domain: string): PlaywrightCookie[] {
+  const cookies: PlaywrightCookie[] = [];
+  // Split by semicolons (standard cookie header format)
+  const parts = raw.split(";").map((s) => s.trim()).filter(Boolean);
+
+  for (const part of parts) {
+    const eqIndex = part.indexOf("=");
+    if (eqIndex === -1) continue;
+
+    const name = part.slice(0, eqIndex).trim();
+    const value = part.slice(eqIndex + 1).trim();
+
+    if (!name) continue;
+
+    cookies.push({
+      name,
+      value,
+      domain: domain.startsWith(".") ? domain : `.${domain}`,
+      path: "/",
+      expires: -1,
+      httpOnly: true,
+      secure: true,
+      sameSite: "Lax",
+    });
+  }
+
+  return cookies;
+}
+
+/**
  * Normalize a cookie object to PlaywrightCookie format, filling in defaults.
  */
 function normalizeCookie(raw: Record<string, unknown>): PlaywrightCookie {

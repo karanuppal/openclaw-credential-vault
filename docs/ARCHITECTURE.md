@@ -94,7 +94,7 @@ The plugin consists of 12 TypeScript modules and a Rust binary:
 | Module | Purpose | Key Exports |
 |--------|---------|-------------|
 | **cli.ts** | All `openclaw vault` CLI commands: init, add, list, show, rotate, remove, test, audit, logs. Includes tool-name validation (path traversal protection) and interactive prompting. | `registerCliCommands()` |
-| **guesser.ts** | Credential format detection. Analyzes a credential value on `vault add` to detect known prefixes (Stripe, GitHub, etc.), JWTs, JSON blobs, passwords, and generic API keys. Suggests injection rules and scrub patterns. | `guessCredentialFormat()`, `buildToolConfigFromGuess()` |
+| **guesser.ts** | Credential format detection and usage-based config builder. Analyzes a credential value on `vault add` to detect known prefixes (Stripe, GitHub, etc.), JWTs, JSON blobs, passwords, and generic API keys. Suggests usage types and scrub patterns. | `guessCredentialFormat()`, `buildToolConfig()` |
 
 ### Browser Support
 

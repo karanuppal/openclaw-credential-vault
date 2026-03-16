@@ -6,7 +6,6 @@ import {
   isShortPassword,
   isGenericApiKey,
   formatGuessDisplay,
-  buildToolConfigFromGuess,
   GuessResult,
 } from "../src/guesser.js";
 
@@ -188,18 +187,18 @@ describe("guessCredentialFormat — Heuristic paths", () => {
     expect(result.format).toBe("jwt");
     expect(result.confidence).toBe("medium");
     expect(result.needsPrompt).toBe(true);
-    expect(result.promptHints.askApiUrl).toBe(true);
-    // Should suggest Bearer header injection
-    const webFetch = result.suggestedInject.find((r) => r.tool === "web_fetch");
-    expect(webFetch).toBeDefined();
-    expect(webFetch!.headers).toHaveProperty("Authorization");
-    expect(webFetch!.headers!.Authorization).toContain("Bearer");
+    // JWT no longer pre-builds injection rules — user selects via menu
+    expect(result.suggestedInject).toHaveLength(0);
+    // JWT should suggest a scrub pattern
+    expect(result.suggestedScrub.patterns.length).toBeGreaterThan(0);
+    // JWT should suggest API calls usage
+    expect(result.suggestedUsage).toEqual([1]);
   });
 
-  it("detects JWT and asks for service name when no toolName provided", () => {
+  it("detects JWT without toolName — still no suggestedInject", () => {
     const jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
     const result = guessCredentialFormat(jwt);
-    expect(result.promptHints.askServiceName).toBe(true);
+    expect(result.suggestedInject).toHaveLength(0);
   });
 
   it("detects short password", () => {
@@ -207,8 +206,7 @@ describe("guessCredentialFormat — Heuristic paths", () => {
     expect(result.format).toBe("password");
     expect(result.confidence).toBe("medium");
     expect(result.needsPrompt).toBe(true);
-    expect(result.promptHints.askServiceName).toBe(true);
-    expect(result.promptHints.askInjectionType).toBe(true);
+    expect(result.suggestedUsage).toEqual([3]);
   });
 
   it("detects JSON blob as cookies/OAuth", () => {
@@ -217,7 +215,7 @@ describe("guessCredentialFormat — Heuristic paths", () => {
     expect(result.format).toBe("json-blob");
     expect(result.confidence).toBe("medium");
     expect(result.needsPrompt).toBe(true);
-    expect(result.promptHints.askInjectionType).toBe(true);
+    expect(result.suggestedUsage).toEqual([4]);
   });
 
   it("detects JSON array (cookies) as json-blob", () => {
@@ -227,16 +225,17 @@ describe("guessCredentialFormat — Heuristic paths", () => {
   });
 
   it("detects long random string as generic API key", () => {
-    const key = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEF";
+    const key = "ZXCVBNMASDFGHJKLQWERTYUIOP1234567890ab";
     const result = guessCredentialFormat(key, "acme-service");
     expect(result.format).toBe("generic-api-key");
     expect(result.confidence).toBe("low");
     expect(result.needsPrompt).toBe(true);
-    expect(result.promptHints.askApiUrl).toBe(true);
-    // Should suggest exec-env injection with tool name in env var
-    const execRule = result.suggestedInject.find((r) => r.tool === "exec");
-    expect(execRule).toBeDefined();
-    expect(execRule!.env).toHaveProperty("ACME_SERVICE_API_KEY");
+    // generic-api-key no longer pre-builds injection rules — user selects via menu
+    expect(result.suggestedInject).toHaveLength(0);
+    // Should still have a scrub pattern
+    expect(result.suggestedScrub.patterns.length).toBeGreaterThan(0);
+    // Should suggest API calls usage
+    expect(result.suggestedUsage).toEqual([1]);
   });
 
   it("falls back to unknown for unrecognizable formats", () => {
@@ -305,142 +304,43 @@ describe("formatGuessDisplay", () => {
   });
 });
 
-// ─── buildToolConfigFromGuess ───────────────────────────────────────────────
+// ─── suggestedUsage defaults ───────────────────────────────────────────────
 
-describe("buildToolConfigFromGuess", () => {
-  it("returns suggested config for known tools unchanged", () => {
-    const guess = guessCredentialFormat("ghp_ABCDEFghijklmnopqrstuvwxyz0123456789");
-    const config = buildToolConfigFromGuess("github", guess);
-    expect(config.inject).toEqual(guess.suggestedInject);
-    expect(config.scrub).toEqual(guess.suggestedScrub);
+describe("suggestedUsage defaults", () => {
+  it("suggests browser login ([3]) for password", () => {
+    const result = guessCredentialFormat("MyP@ssw0rd!");
+    expect(result.format).toBe("password");
+    expect(result.suggestedUsage).toEqual([3]);
   });
 
-  it("applies apiUrl override — adds web_fetch rule", () => {
-    const guess = guessCredentialFormat("a".repeat(40), "acme");
-    const config = buildToolConfigFromGuess("acme", guess, {
-      apiUrl: "https://api.acme-crm.com/v1",
-    });
-    const webFetch = config.inject.find((r) => r.tool === "web_fetch");
-    expect(webFetch).toBeDefined();
-    expect(webFetch!.urlMatch).toContain("api.acme-crm.com");
-  });
-
-  it("applies cliTool override — adds/updates exec rule", () => {
-    const guess = guessCredentialFormat("a".repeat(40), "acme");
-    const config = buildToolConfigFromGuess("acme", guess, {
-      cliTool: "acme-cli",
-    });
-    const execRule = config.inject.find((r) => r.tool === "exec");
-    expect(execRule).toBeDefined();
-    expect(execRule!.commandMatch).toContain("acme-cli");
-  });
-
-  it("applies both apiUrl and cliTool overrides", () => {
+  it("suggests API calls ([1]) for JWT", () => {
     const jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
-    const guess = guessCredentialFormat(jwt, "acme");
-    const config = buildToolConfigFromGuess("acme", guess, {
-      apiUrl: "https://api.acme.io",
-      cliTool: "acme",
-    });
-    const webFetch = config.inject.find((r) => r.tool === "web_fetch");
-    expect(webFetch).toBeDefined();
-    expect(webFetch!.urlMatch).toContain("api.acme.io");
-    const execRule = config.inject.find((r) => r.tool === "exec");
-    expect(execRule).toBeDefined();
-    expect(execRule!.commandMatch).toContain("acme");
+    const result = guessCredentialFormat(jwt);
+    expect(result.format).toBe("jwt");
+    expect(result.suggestedUsage).toEqual([1]);
   });
 
-  // ─── Regression: password/unknown with overrides must create exec rules ───
-
-  it("creates exec rule from envVarName override when suggestedInject is empty (password)", () => {
-    const guess = guessCredentialFormat("myP@ssw0rd!", "gumroad");
-    // Password format returns empty suggestedInject
-    expect(guess.suggestedInject).toEqual([]);
-
-    const config = buildToolConfigFromGuess("gumroad", guess, {
-      envVarName: "GUMROAD_TOKEN",
-      commandMatch: "*gumroad*",
-    });
-
-    // Must create an exec rule — not silently drop the overrides
-    const execRule = config.inject.find((r) => r.tool === "exec");
-    expect(execRule).toBeDefined();
-    expect(execRule!.env).toHaveProperty("GUMROAD_TOKEN");
-    expect(execRule!.env!["GUMROAD_TOKEN"]).toBe("$vault:gumroad");
-    expect(execRule!.commandMatch).toBe("*gumroad*");
+  it("suggests browser session ([4]) for json-blob", () => {
+    const result = guessCredentialFormat('{"cookies":[{"name":"sid","value":"x"}]}');
+    expect(result.format).toBe("json-blob");
+    expect(result.suggestedUsage).toEqual([4]);
   });
 
-  it("creates exec rule from envVarName override with default commandMatch when only envVarName provided", () => {
-    const guess = guessCredentialFormat("short-pwd", "myservice");
-    expect(guess.suggestedInject).toEqual([]);
-
-    const config = buildToolConfigFromGuess("myservice", guess, {
-      envVarName: "MYSERVICE_KEY",
-    });
-
-    const execRule = config.inject.find((r) => r.tool === "exec");
-    expect(execRule).toBeDefined();
-    expect(execRule!.env).toHaveProperty("MYSERVICE_KEY");
-    expect(execRule!.commandMatch).toBe("myservice*");
+  it("suggests API calls ([1]) for generic-api-key", () => {
+    const result = guessCredentialFormat("A".repeat(40));
+    expect(result.format).toBe("generic-api-key");
+    expect(result.suggestedUsage).toEqual([1]);
   });
 
-  it("creates exec rule from commandMatch override when only commandMatch provided", () => {
-    const guess = guessCredentialFormat("another-pwd", "deploy-tool");
-    expect(guess.suggestedInject).toEqual([]);
-
-    const config = buildToolConfigFromGuess("deploy-tool", guess, {
-      commandMatch: "deploy*|dtool*",
-    });
-
-    const execRule = config.inject.find((r) => r.tool === "exec");
-    expect(execRule).toBeDefined();
-    expect(execRule!.commandMatch).toBe("deploy*|dtool*");
-    expect(execRule!.env).toHaveProperty("DEPLOY_TOOL_KEY");
-    expect(execRule!.env!["DEPLOY_TOOL_KEY"]).toBe("$vault:deploy-tool");
+  it("suggests empty usage for known prefix (auto-configured)", () => {
+    const result = guessCredentialFormat("sk_live_4eC39HqLyjWDarjtT1zdp7dc");
+    expect(result.knownToolName).toBe("stripe");
+    expect(result.suggestedUsage).toEqual([]);
   });
 
-  it("creates exec rule for unknown/password format with overrides", () => {
-    // Short credential — triggers "password" format (empty suggestedInject)
-    const guess = guessCredentialFormat("x", "mystery");
-    expect(guess.suggestedInject).toEqual([]);
-
-    const config = buildToolConfigFromGuess("mystery", guess, {
-      envVarName: "MYSTERY_TOKEN",
-      commandMatch: "*mystery*",
-    });
-
-    const execRule = config.inject.find((r) => r.tool === "exec");
-    expect(execRule).toBeDefined();
-    expect(execRule!.env!["MYSTERY_TOKEN"]).toBe("$vault:mystery");
-    expect(execRule!.commandMatch).toBe("*mystery*");
-  });
-
-  it("does not double-create exec rule when envVarName and commandMatch both provided", () => {
-    const guess = guessCredentialFormat("p@ss123!", "svc");
-    const config = buildToolConfigFromGuess("svc", guess, {
-      envVarName: "SVC_PASS",
-      commandMatch: "svc-cli*",
-    });
-
-    const execRules = config.inject.filter((r) => r.tool === "exec");
-    expect(execRules).toHaveLength(1);
-    expect(execRules[0].env!["SVC_PASS"]).toBe("$vault:svc");
-    expect(execRules[0].commandMatch).toBe("svc-cli*");
-  });
-
-  it("still modifies existing exec rule when suggestedInject is not empty", () => {
-    // Generic API key has a suggested exec rule — overrides should modify, not create new
-    const guess = guessCredentialFormat("a".repeat(40), "acme");
-    expect(guess.suggestedInject.length).toBeGreaterThan(0);
-
-    const config = buildToolConfigFromGuess("acme", guess, {
-      envVarName: "ACME_SECRET",
-      commandMatch: "acme-tool*",
-    });
-
-    const execRules = config.inject.filter((r) => r.tool === "exec");
-    expect(execRules).toHaveLength(1);
-    expect(execRules[0].env).toHaveProperty("ACME_SECRET");
-    expect(execRules[0].commandMatch).toBe("acme-tool*");
+  it("suggests empty usage for unknown format", () => {
+    const result = guessCredentialFormat("🔑 weird credential with spaces and emojis that's pretty long too");
+    expect(result.format).toBe("unknown");
+    expect(result.suggestedUsage).toEqual([]);
   });
 });

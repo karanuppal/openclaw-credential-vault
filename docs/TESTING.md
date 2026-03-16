@@ -1,491 +1,95 @@
 # Testing
 
-> 30 test files, 610 tests, all passing. Here's what they cover and how to run them.
+Current baseline (latest full run):
 
----
+- **34 test files**
+- **658 tests**
+- **0 failures**
 
-## Quick Start
+Run everything:
 
 ```bash
-# Run all tests
-npm test
+npm run build
+npx vitest run
+```
 
-# Run a specific test file
-npx vitest run tests/crypto.test.ts
+## Quick commands
 
-# Watch mode (re-runs on file changes)
+```bash
+# all tests
+npx vitest run
+
+# single file
+npx vitest run tests/cli-use-flag.test.ts
+
+# filter by test name
+npx vitest run -t "browser-session"
+
+# watch mode
 npm run test:watch
 
 # Rust resolver tests
 npm run test:resolver
 
-# Cross-language compatibility (TypeScript ↔ Rust)
+# TS <-> Rust compatibility tests
 npm run test:cross
 ```
 
----
-
-## Test Results Summary
-
-| Status | Count |
-|--------|-------|
-| **Passing** | 610 |
-| **Failing** | 0 |
-| **Total** | 610 |
-
-All tests pass on both local machines and CI. Performance thresholds have been relaxed to realistic values for shared VMs.
-
----
-
-## Test Categories
-
-### Unit Tests — Crypto
-
-**File:** `crypto.test.ts` (19 tests)
-
-Tests the encryption layer in isolation:
-- AES-256-GCM encrypt/decrypt round-trips
-- Argon2id key derivation determinism (same input → same key)
-- Different salts produce different keys
-- File format correctness (salt + nonce + ciphertext + auth tag layout)
-- Credential file read/write with atomic operations
-- Secure delete (random overwrite before unlink)
-- Machine passphrase derivation
-- Edge cases: empty input, very long credentials, Unicode content
-
-### Unit Tests — Scrubber
-
-**Files:** `scrubber.test.ts` (18 tests), `scrubber-advanced.test.ts` (26 tests), `literal-scrub.test.ts` (12 tests), `env-scrub.test.ts` (26 tests)
-
-Tests the three-layer scrubbing pipeline:
-
-**Basic scrubbing (scrubber.test.ts):**
-- Regex pattern matching for all known credential formats
-- Global patterns (Telegram bot tokens, Slack tokens)
-- Scrub tracking (which patterns matched, how many replacements)
-- Object scrubbing (recursive string/array/object traversal)
-- `containsCredentials()` detection function
-
-**Advanced scrubbing (scrubber-advanced.test.ts):**
-- Multiple credentials in a single string
-- Nested object scrubbing at arbitrary depth
-- Mixed pattern types in one pass
-- Scrubbing stability (scrubbing already-scrubbed text is idempotent)
-- Performance with many patterns
-
-**Literal matching (literal-scrub.test.ts):**
-- In-memory literal credential registration
-- indexOf-based matching catches format-agnostic secrets
-- Hash tracking for credential persistence
-- Cleanup: `removeLiteralCredential()` removes from both literal and hash maps
-- Short credentials (<4 chars) are excluded (too many false positives)
-
-**Env variable scrubbing (env-scrub.test.ts):**
-- Matches `KEY=[VAULT:env-redacted] `TOKEN=[VAULT:env-redacted] `SECRET=[VAULT:env-redacted] `PASSWORD=[VAULT:env-redacted] patterns
-- Selective scrubbing: doesn't re-scrub values already replaced by regex/literal pass
-- Case-insensitive variable name matching
-- Handles multi-line output with mixed env var formats
-
-### Unit Tests — Registry
-
-**File:** `registry.test.ts` (22 tests)
-
-Tests pattern matching and credential detection:
-- Glob-to-regex conversion (`gh *|git *` → proper regex)
-- Command matching: simple commands, compound commands (`;`, `&&`, `||`), multi-line with comments
-- URL matching for web_fetch patterns
-- `findMatchingRules()` with multiple rules and priorities
-- `detectCredentialType()` for all known prefixes
-- `generateScrubPattern()` produces valid regex from credential samples
-- Known tools registry completeness (Stripe, GitHub, Gumroad, OpenAI, Anthropic, Amazon, Netflix)
-
-### Unit Tests — Config
-
-**File:** `config.test.ts` (10 tests)
-
-Tests configuration management:
-- `readConfig()` with valid YAML, missing file, and corrupted YAML
-- `writeConfig()` atomic write (tmp + rename)
-- Corruption recovery: auto-restore from `.bak` on YAML parse failure
-- `upsertTool()` and `removeTool()` CRUD operations
-- `initConfig()` creates vault directory with correct permissions
-- `readMeta()` parses `.vault-meta.json`
-- `getOverdueCredentials()` rotation interval calculations
-
-### Unit Tests — Format Guessing
-
-**Files:** `guesser.test.ts` (43 tests), `format-guessing.test.ts` (18 tests)
-
-Tests credential format detection:
-- Known prefix detection for all 8 prefix rules (Stripe live/test/restricted, GitHub PAT/fine-grained, Gumroad, Anthropic, OpenAI)
-- JWT detection (three dot-separated base64 segments)
-- JSON blob detection (cookies, OAuth tokens)
-- Short password detection
-- Generic API key detection (long random strings)
-- Unknown format fallback
-- `buildToolConfigFromGuess()` with user overrides (API URL, CLI tool, service name)
-- `formatGuessDisplay()` output formatting
-
-### Unit Tests — Audit
-
-**Files:** `audit.test.ts` (18 tests), `audit-log.test.ts` (11 tests)
-
-Tests the audit logging system:
-- Append-only JSONL writing
-- Log rotation at 5MB threshold (keeps one backup)
-- Event types: credential_access, scrub, compaction
-- `readAuditLog()` with filters: tool, type, time window, limit
-- Duration parsing: `24h`, `7d`, `30m`
-- `computeAuditStats()` aggregate statistics
-- Empty log handling
-
-### Unit Tests — Browser
-
-**Files:** `browser.test.ts` (56 tests), `browser-password.test.ts` (18 tests), `browser-cookie.test.ts` (20 tests)
-
-> Total browser tests: 94
-
-Tests browser credential support:
-
-**Domain pinning (browser.test.ts):**
-- Leading-dot domain matching (`.amazon.com` matches subdomains)
-- Exact hostname matching
-- Domain pin validation (rejects wildcards like `*.com`, bare TLDs)
-- Multiple domain pins per credential
-- Hostname extraction from URLs
-
-**Password injection (browser-password.test.ts):**
-- `$vault:` placeholder detection and resolution
-- Domain pin validation before resolution
-- Error on domain mismatch
-- Non-placeholder text passes through unchanged
-
-**Cookie management (browser-cookie.test.ts):**
-- JSON array parsing (Playwright format)
-- Netscape/curl format parsing (tab-separated)
-- Cookie domain filtering
-- Tracking cookie detection and filtering (`_ga`, `_gid`, `_fbp`, etc.)
-- Expiry tracking (`getEarliestExpiry()`)
-- Expired cookie detection and removal
-- `shouldInjectCookies()` URL matching
-
-### Integration Tests — Hooks
-
-**File:** `hooks.test.ts` (12 tests)
-
-Tests the full hook pipeline with mocked plugin API:
-- `before_tool_call` injects credentials for matching commands
-- `before_tool_call` skips non-matching commands
-- `after_tool_call` scrubs output
-- `tool_result_persist` scrubs before transcript
-- `message_sending` scrubs outbound messages
-- `before_message_write` scrubs all messages
-- Hook priority ordering verified
-
-### Integration Tests — E2E
-
-**File:** `e2e.test.ts` (15 tests)
-
-End-to-end tests of the complete credential lifecycle:
-
-**Phase 1 (inline mode):**
-- Add credential → inject into exec → scrub output → verify audit log
-- Unknown credential format → generic injection
-- Web_fetch header injection with URL matching
-- Environment cleanup after tool call
-
-**Phase 2 (binary mode):**
-- Resolver binary spawning and JSON protocol
-- Protocol version negotiation (version match, mismatch detection, backward compat with old resolvers)
-- Cross-process credential resolution
-- Error handling for missing credentials, decrypt failures, permission denied
-- Resolver failure policy: `block` (credential not injected, warning in output) and `warn-and-inline` (fallback to inline decryption with security downgrade audit event)
-- Actionable user-facing warnings with direction-specific fix instructions
-
-**Migration (Phase 1 → Phase 2):**
-- Credential files migrated to system vault directory
-- Config updated to binary resolver mode
-- Inline-encrypted files decryptable by Rust resolver
-
-### Integration Tests — Sandbox
-
-**File:** `sandbox-e2e.test.ts` (9 tests)
-
-Tests credential injection into sandboxed tool execution:
-- Env vars passed into sandbox container
-- HTTP headers injected for sandboxed web_fetch
-- Output scrubbing works on sandbox tool results
-- Sandbox isolation doesn't bypass scrubbing
-
-### Integration Tests — CLI Browser
-
-**File:** `cli-browser.test.ts` (13 tests)
-
-Tests the CLI commands for browser credentials:
-- `vault add --type browser-cookie --domain` with JSON input
-- `vault add --type browser-cookie --domain` with Netscape format
-- `vault add --type browser-password --domain --key`
-- Error handling: missing --domain, missing --key
-- Cookie credential decryption and parsing
-- Browser tool config written to tools.yaml
-
-### Integration Tests — Cross-Compatibility
-
-**File:** `cross-compat.test.ts` (8 tests)
-
-Tests TypeScript ↔ Rust encryption compatibility:
-- TypeScript-encrypted files decrypt correctly in Rust
-- Identical Argon2id key derivation output from both implementations
-- Machine passphrase derivation produces same result in both languages
-- Binary file format compatibility (salt + nonce + ciphertext + auth tag)
-
-### Adversarial Tests
-
-**File:** `adversarial.test.ts` (54 tests)
-
-Simulates real attacks against the vault:
-
-**Prompt injection attacks:**
-- Agent instructed to `cat` credential files → gets ciphertext
-- Agent instructed to print env vars after injection → vars cleaned up
-- Agent told to base64-encode a credential → scrubber catches known patterns
-- Agent writes credential to a file → `before_tool_call` intercepts
-
-**Format evasion:**
-- Credential split across multiple lines
-- Credential embedded in JSON, XML, YAML structures
-- Credential with added whitespace or delimiters
-- URL-encoded credential values
-- Credential in shell variable assignment
-
-**Domain pinning attacks:**
-- Browser fill directed to wrong domain → blocked
-- Similar-looking domain (amazom.com vs amazon.com) → blocked
-- Subdomain of allowed domain → allowed
-- Exact domain when pin uses leading dot → allowed
-
-**Injection bypass attempts:**
-- Command injection in tool name (`../etc/passwd`)
-- Glob pattern manipulation in command match
-- Race condition between inject and scrub (deterministic — single-threaded)
-
-### Adversarial Tests — False Positives
-
-**File:** `false-positives.test.ts` (37 tests)
-
-Tests that the scrubber does NOT incorrectly redact:
-- UUIDs (`550e8400-e29b-41d4-a716-446655440000`)
-- Git commit hashes (`a1b2c3d4e5f6...`)
-- CSS hex colors (`#ff6b6b`)
-- Base64 strings that aren't credentials
-- Long URLs with random query parameters
-- Package version strings
-- Regular English text containing "key" or "token"
-- JSON web keys (JWK) structure fields
-- Docker image digests
-- npm package scope strings
-
-### Adversarial Tests — Write/Edit Scrubbing
-
-**File:** `write-edit-scrub.test.ts` (13 tests)
-
-Tests credential scrubbing in file write operations:
-- `write` tool with credential in content parameter
-- `edit` tool with credential in `newText` / `new_string` parameter
-- Multiple credentials in a single write
-- Nested credential in JSON being written
-- Credential in YAML being written
-- Write to memory files (highest risk path)
-
-### Adversarial Tests — Compaction
-
-**File:** `compaction-scrub.test.ts` (12 tests)
-
-Tests credential handling during session compaction:
-- Compaction with active credentials → scrubbed
-- `after_compaction` audit event logged
-- Compacted text containing credential fragments → caught by literal matching
-- Compaction without active vault → no-op
-
-### Adversarial Tests — Sub-Agent Isolation
-
-**File:** `subagent-isolation.test.ts` (8 tests)
-
-Tests that sub-agents get the same security treatment:
-- Sub-agent tool calls trigger injection hooks
-- Sub-agent output scrubbed
-- Sub-agent can't access credentials for tools not matching its commands
-- Multiple concurrent sub-agents with different credentials
-
-### Unit Tests — Resolver Protocol Versioning
-
-**File:** `resolver-versioning.test.ts` (35 tests)
-
-Tests the protocol versioning and failure handling between the TypeScript plugin and Rust resolver:
-- Warning message generation for all error types (PROTOCOL_MISMATCH, NOT_FOUND, DECRYPT_FAILED, PERMISSION_DENIED, UNKNOWN)
-- Direction-specific fix instructions: plugin newer → suggests `vault-setup.sh`; resolver newer → suggests `npm update`; unknown → suggests both
-- Protocol version constant validation
-- Resolver binary discovery (custom path, fallback, nonexistent)
-- Structured ResolverResult typing (success and error variants)
-- Live resolver binary tests (accepts protocol_version field, returns it in response)
-- Warning injection into tool output (string content, array content, multiple warnings, no-op when clean)
-- Audit event writing: `resolver_failure` and `security_downgrade` events persist to audit log
-- `onResolverFailure` config defaults to `"block"`
-
-### Integration Tests — CLI Logs Display
-
-**File:** `cli-logs-display.test.ts` (5 tests)
-
-Tests the `vault logs` CLI command output formatting:
-- Default output (last 50 events)
-- `--tool` filter by tool name
-- `--type` filter by event type
-- `--stats` aggregate statistics display
-- `--json` raw JSONL output
-
-### Adversarial Tests — Concurrent Access
-
-**File:** `concurrent.test.ts` (5 tests)
-
-Tests credential resolution under concurrent load:
-- 5 simultaneous credential resolutions for the same tool
-- 5 simultaneous resolutions for different tools
-- Cache consistency under concurrent access
-- No credential cross-contamination between concurrent calls
-
-### Integration Tests — Rotation
-
-**File:** `rotation.test.ts` (19 tests)
-
-Tests credential rotation workflows:
-- Single credential rotation (new key replaces old)
-- `lastRotated` timestamp updates
-- Scrub patterns update when credential format changes
-- `rotate --check` identifies overdue credentials
-- `rotate --all` mass rotation flow
-- Post-rotation security checklist output
-- Rotation interval calculation and overdue detection
-- Extended rotation metadata (label, scopes, procedure, revoke URL)
-
-### Performance Tests
-
-**File:** `performance.test.ts` (21 tests)
-
-Benchmarks scrubbing performance at scale:
-
-| Test | Input Size | Patterns | Target | Result |
-|------|-----------|----------|--------|--------|
-| Regex scrub (5 patterns) | 1KB, 10KB, 100KB, 1MB | 5 | <1ms (<10KB), <50ms (1MB) | ✅ |
-| Regex scrub (20 patterns) | 1KB, 10KB, 100KB, 1MB | 20 | <1ms (<10KB), <50ms (1MB) | ✅ |
-| Combined regex + literal | 1KB, 10KB, 100KB, 1MB | 10+5 | <1ms (<10KB), <50ms (1MB) | ✅ |
-
-All performance tests pass on both local machines and CI. Thresholds have been set to realistic values that work on shared VMs.
-
----
-
-## Coverage Map
-
-Which components are tested by which test categories:
-
-| Component | Unit | Integration | Adversarial | Performance |
-|-----------|------|-------------|-------------|-------------|
-| crypto.ts | ✅ crypto, cross-compat | ✅ e2e | ✅ adversarial | — |
-| scrubber.ts | ✅ scrubber, scrubber-advanced, literal-scrub, env-scrub | ✅ hooks, e2e | ✅ adversarial, false-positives, compaction-scrub, perl-scrubber | ✅ performance |
-| registry.ts | ✅ registry | ✅ hooks, e2e | ✅ adversarial | — |
-| config.ts | ✅ config | ✅ e2e | — | — |
-| cli.ts | — | ✅ cli-browser, cli-logs-display, rotation | ✅ adversarial (tool name validation) | — |
-| guesser.ts | ✅ guesser, format-guessing | — | — | — |
-| browser.ts | ✅ browser, browser-password, browser-cookie | ✅ cli-browser | ✅ adversarial (domain pinning) | — |
-| audit.ts | ✅ audit, audit-log | ✅ e2e, resolver-versioning | — | — |
-| vault-status.ts | — | ✅ rotation (status data) | — | — |
-| resolver.ts | — | ✅ e2e (Phase 2), resolver-versioning | — | — |
-| index.ts (hooks) | — | ✅ hooks, e2e, sandbox-e2e | ✅ write-edit-scrub, compaction-scrub, subagent-isolation, concurrent | — |
-
-### Test file by category
-
-**Unit (276 tests):** crypto (19), scrubber (18), scrubber-advanced (26), literal-scrub (12), env-scrub (26), registry (22), config (10), guesser (43), format-guessing (17), audit (18), audit-log (9), browser (56), browser-password (18), browser-cookie (20)
-
-**Integration (97 tests):** hooks (12), e2e (15), sandbox-e2e (9), cli-browser (13), cli-logs-display (5), cross-compat (8), rotation (19), resolver-versioning (35) — note: resolver-versioning tests exercise the TS↔Rust binary interface
-
-**Adversarial (216 tests):** adversarial (54), false-positives (37), write-edit-scrub (13), compaction-scrub (12), subagent-isolation (8), concurrent (5), perl-scrubber (30)
-
-**Performance (21 tests):** performance (21)
-
-**Total: 610 tests across 30 files**
-
----
-
-## Running Tests
-
-### Prerequisites
-
-```bash
-npm install          # Install dependencies
-npm run build        # Compile TypeScript (needed for cross-compat tests)
-```
-
-### Commands
-
-```bash
-# All tests (recommended)
-npm test
-
-# Specific test file
-npx vitest run tests/adversarial.test.ts
-
-# Tests matching a pattern
-npx vitest run -t "domain pinning"
-
-# Watch mode — re-runs affected tests on file save
-npm run test:watch
-
-# Rust resolver unit tests (requires Rust toolchain)
-npm run test:resolver
-
-# Cross-language compatibility only
-npm run test:cross
-
-# With verbose output
-npx vitest run --reporter=verbose
-```
-
-### Environment Variables
-
-| Variable | Purpose |
-|----------|---------|
-| `OPENCLAW_VAULT_DEBUG` | Enable debug error logging during tests |
-| `HOME` | Override for isolated test environments |
-| `OPENCLAW_VAULT_PASSPHRASE` | Required for passphrase-mode tests |
-
-### CI Notes
-
-- Tests use isolated temporary directories — no risk to production vault
-- Each test file creates and tears down its own vault instance
-- All 610 tests pass on CI (GitHub Actions, ubuntu-latest)
-- Total test runtime: ~33 seconds (dominated by Argon2id derivation in crypto tests)
-- CI runs 6 jobs: Rust resolver tests, TypeScript tests (Node 20 + 22), install verification (Debian 12 + Ubuntu 24), cross-language compatibility
-
----
-
-## Perl Stdout Scrubber Tests
-
-```bash
-npx vitest run tests/perl-scrubber.test.ts
-```
-
-**30 tests** covering:
-
-- **Basic scrubbing** (5): echo, printenv, multi-occurrence, multi-line, passthrough
-- **Exfiltration scenarios** (3): jq env access, stderr capture, semicolon-separated commands
-- **Exit code preservation** (3): success, failure, specific exit codes via `set -o pipefail`
-- **Security edge cases** (5): file redirect bypass (known limitation), empty output, large output (10k lines), special characters via base64, command wrapping validation
-- **Multi-credential scrubbing** (8): 2-3 credentials on same/different lines, repeated occurrences, special chars, exit code preservation, empty output, command string verification
-- **PTY mode** (3): echo through PTY, env var exfiltration through PTY, multi-credential through PTY — all pass, pipe sits outside PTY boundary
-- **System compatibility** (2): perl availability, MIME::Base64 module
-
-### Key Design Decisions
-
-- Tests use `execSync` with `/bin/bash` to simulate the exact command transformation the `before_tool_call` hook performs
-- Credentials are base64-encoded in test perl commands, matching production behavior
-- PTY emulation uses `script -qc` which allocates a real pseudo-terminal
-- File redirect bypass is explicitly tested and documented as a known limitation
+## Test file list and counts
+
+- `tests/adversarial.test.ts` — 54
+- `tests/audit-log.test.ts` — 9
+- `tests/audit.test.ts` — 18
+- `tests/browser-cookie.test.ts` — 20
+- `tests/browser-password.test.ts` — 18
+- `tests/browser-session-e2e.test.ts` — 6
+- `tests/browser.test.ts` — 56
+- `tests/cli-browser.test.ts` — 2
+- `tests/cli-logs-display.test.ts` — 5
+- `tests/cli-use-flag.test.ts` — 20
+- `tests/compaction-scrub.test.ts` — 12
+- `tests/concurrent.test.ts` — 5
+- `tests/config.test.ts` — 10
+- `tests/cross-compat.test.ts` — 8
+- `tests/crypto.test.ts` — 19
+- `tests/e2e.test.ts` — 15
+- `tests/env-scrub.test.ts` — 26
+- `tests/false-positives.test.ts` — 37
+- `tests/format-guessing.test.ts` — 17
+- `tests/guesser.test.ts` — 45
+- `tests/hooks.test.ts` — 12
+- `tests/interactive-flow.test.ts` — 8
+- `tests/literal-scrub.test.ts` — 12
+- `tests/performance.test.ts` — 21
+- `tests/perl-scrubber.test.ts` — 30
+- `tests/registry.test.ts` — 22
+- `tests/resolver-versioning.test.ts` — 35
+- `tests/rotation.test.ts` — 19
+- `tests/sandbox-e2e.test.ts` — 9
+- `tests/scrubber-advanced.test.ts` — 26
+- `tests/scrubber.test.ts` — 18
+- `tests/subagent-isolation.test.ts` — 8
+- `tests/usage-config.test.ts` — 23
+- `tests/write-edit-scrub.test.ts` — 13
+
+Total: **658** tests.
+
+## Coverage map (high level)
+
+- **Core crypto + config:** `crypto.test.ts`, `config.test.ts`, `cross-compat.test.ts`
+- **Credential format + vault add UX:** `guesser.test.ts`, `format-guessing.test.ts`, `usage-config.test.ts`, `interactive-flow.test.ts`, `cli-use-flag.test.ts`, `browser-session-e2e.test.ts`
+- **Injection + hooks:** `registry.test.ts`, `hooks.test.ts`, `e2e.test.ts`, `sandbox-e2e.test.ts`
+- **Scrubbing:** `scrubber.test.ts`, `scrubber-advanced.test.ts`, `literal-scrub.test.ts`, `env-scrub.test.ts`, `perl-scrubber.test.ts`
+- **Browser credentials:** `browser.test.ts`, `browser-password.test.ts`, `browser-cookie.test.ts`, `browser-session-e2e.test.ts`, `cli-browser.test.ts`
+- **Adversarial/security:** `adversarial.test.ts`, `false-positives.test.ts`, `write-edit-scrub.test.ts`, `compaction-scrub.test.ts`, `subagent-isolation.test.ts`, `concurrent.test.ts`
+- **Operations/audit:** `audit.test.ts`, `audit-log.test.ts`, `rotation.test.ts`, `cli-logs-display.test.ts`, `resolver-versioning.test.ts`
+- **Performance:** `performance.test.ts`
+
+## Notes
+
+- `vault add` coverage reflects the current `--use` flow (`api`, `cli`, `browser-login`, `browser-session`) and strict `--yes` validation.
+- Browser-session coverage includes:
+  - inline cookie JSON via `--key`
+  - file path via `--key`
+  - re-prompt behavior for invalid/empty interactive input
+  - plaintext source warning beha[VAULT:gmail-app]tion is declined or skipped
