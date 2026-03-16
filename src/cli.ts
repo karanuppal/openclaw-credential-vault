@@ -777,6 +777,22 @@ export function registerCliCommands(program: CliProgram): void {
           let cookieFilePath: string | null = null;
           let cookieIsInline = false;
 
+          // Check if --key already contains cookie data (inline JSON or file path)
+          if (options.key) {
+            const keyTrimmed = options.key.trim();
+            if (keyTrimmed.startsWith("[") || keyTrimmed.startsWith("{")) {
+              cookieContent = keyTrimmed;
+              cookieIsInline = true;
+            } else if (fs.existsSync(keyTrimmed)) {
+              try {
+                cookieContent = fs.readFileSync(keyTrimmed, "utf-8");
+                cookieFilePath = keyTrimmed;
+              } catch (err) {
+                console.log(`  Could not read file from --key: ${(err as Error).message}`);
+              }
+            }
+          }
+
           while (!cookieContent) {
             const input = await promptUser("  Paste cookie JSON or enter file path: ");
             const trimmed = input.trim();
