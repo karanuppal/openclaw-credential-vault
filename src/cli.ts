@@ -600,6 +600,7 @@ export function registerCliCommands(program: CliProgram): void {
 
       // ── Detect format ──
       const guess = guessCredentialFormat(options.key, tool);
+      const toolNameTemplate = KNOWN_TOOLS[tool];
 
       // ── Known-prefix auto-config path (high confidence) ──
       if (guess.knownToolName && guess.confidence === "high") {
@@ -640,7 +641,54 @@ export function registerCliCommands(program: CliProgram): void {
         return;
       }
 
-      // ── Interactive flow (no --use, no known prefix) ──
+      // ── Known-name template path (tool name matches registry template) ──
+      if (toolNameTemplate) {
+        console.log("");
+        await writeCredentialFile(vaultDir, tool, options.key, passphrase);
+        if (config.resolverMode === "binary") {
+          const syncOk = syncToSystemVault(vaultDir, tool);
+          if (!syncOk) {
+            console.log(`\n⚠ Warning: Credential stored locally but NOT synced to system vault.`);
+          }
+        }
+        console.log(`✓ Credential encrypted and stored (AES-256-GCM)`);
+        console.log(`  Detected: ${guess.displayName}`);
+        console.log(`  Using known template for tool: ${tool}`);
+
+        if (!options.yes) {
+          console.log("\n  Template config:");
+          for (const rule of toolNameTemplate.inject) {
+            if (rule.tool === "web_fetch") {
+              const headerPreview = rule.headers
+                ? Object.entries(rule.headers).map(([k, v]) => `${k}: ${v}`).join(", ")
+                : "(none)";
+              console.log(`    - API header injection: ${headerPreview} @ ${rule.urlMatch ?? "*"}`);
+            } else if (rule.tool === "exec") {
+              const envPreview = rule.env ? Object.keys(rule.env).join(", ") : "(none)";
+              console.log(`    - CLI env injection: ${envPreview} @ ${rule.commandMatch ?? "*"}`);
+            } else if (rule.tool === "browser" && rule.type === "browser-password") {
+              console.log(`    - Browser login on ${rule.domainPin?.join(", ") ?? "(any domain)"}`);
+            } else if (rule.tool === "browser" && rule.type === "browser-cookie") {
+              console.log(`    - Browser session on ${rule.domainPin?.join(", ") ?? "(any domain)"}`);
+            }
+          }
+
+          const confirm = await promptUser("\nSave using this template? [Y/n] ");
+          if (confirm.toLowerCase() === "n" || confirm.toLowerCase() === "no") {
+            console.log("\n✗ Aborted.");
+            return;
+          }
+        }
+
+        const inject = [...toolNameTemplate.inject];
+        const scrub = { patterns: [...toolNameTemplate.scrub.patterns] };
+        if (options.scrubPattern) scrub.patterns.push(options.scrubPattern);
+
+        await writeToolConfigEntry(tool, inject, scrub, options as any, config, vaultDir);
+        return;
+      }
+
+      // ── Interactive flow (no --use, no known prefix/template) ──
       if (options.yes) {
         console.error("Error: --yes requires either a known credential format or --use with all required flags.");
         return;

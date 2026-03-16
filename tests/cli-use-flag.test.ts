@@ -5,7 +5,7 @@ import * as os from "node:os";
 
 import { initConfig, readConfig } from "../src/config.js";
 import * as configModule from "../src/config.js";
-import { registerCliCommands } from "../src/cli.js";
+import { registerCliCommands, setPromptUser, resetPromptUser } from "../src/cli.js";
 
 interface CapturedCommand {
   name: string;
@@ -85,6 +85,7 @@ describe("vault add --use parsing", () => {
   });
 
   afterEach(() => {
+    resetPromptUser();
     vi.restoreAllMocks();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
@@ -245,6 +246,32 @@ describe("vault add --use parsing", () => {
 
       expect(readConfig(tmpDir).tools["cli-ok"]).toBeDefined();
       expect(errors.length).toBe(0);
+    });
+
+    it("--yes with known tool-name template and no --use succeeds", async () => {
+      const program = createMockProgram();
+      registerCliCommands(program as any);
+      await getAddAction(program)("resy", { key: "A".repeat(40), yes: true });
+
+      const cfg = readConfig(tmpDir).tools["resy"];
+      expect(cfg).toBeDefined();
+      expect(cfg.inject.some((r) => r.tool === "web_fetch")).toBe(true);
+      const webFetch = cfg.inject.find((r) => r.tool === "web_fetch");
+      expect(webFetch?.headers?.["x-resy-auth-token"]).toBe("$vault:resy");
+      expect(webFetch?.urlMatch).toBe("*api.resy.com/*");
+      expect(errors.length).toBe(0);
+    });
+
+    it("known tool-name template without --yes asks for confirmation", async () => {
+      setPromptUser(async () => "y");
+
+      const program = createMockProgram();
+      registerCliCommands(program as any);
+      await getAddAction(program)("resy", { key: "A".repeat(40) });
+
+      const cfg = readConfig(tmpDir).tools["resy"];
+      expect(cfg).toBeDefined();
+      expect(cfg.inject.some((r) => r.tool === "web_fetch")).toBe(true);
     });
 
     it("--yes with --use cli but no --command errors", async () => {

@@ -133,6 +133,18 @@ export const KNOWN_TOOLS: Record<string, KnownToolDef> = {
       patterns: [],
     },
   },
+  resy: {
+    inject: [
+      {
+        tool: "web_fetch",
+        urlMatch: "*api.resy.com/*",
+        headers: { "x-resy-auth-token": "$vault:resy" },
+      },
+    ],
+    scrub: {
+      patterns: ["[A-Za-z0-9_-]{32,}"],
+    },
+  },
 };
 
 /**
