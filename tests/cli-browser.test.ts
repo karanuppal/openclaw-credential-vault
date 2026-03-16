@@ -65,7 +65,6 @@ describe("CLI vault add browser option registration", () => {
     const addCmd = getAddCommand(program);
     expect(addCmd.options.has("use")).toBe(true);
     expect(addCmd.options.has("domain")).toBe(true);
-    expect(addCmd.options.has("cookie-file")).toBe(true);
   });
 
   it("does not register legacy --type on vault add", () => {

@@ -3,7 +3,7 @@
 Current baseline (latest full run):
 
 - **34 test files**
-- **656 tests**
+- **658 tests**
 - **0 failures**
 
 Run everything:
@@ -58,7 +58,7 @@ npm run test:cross
 - `tests/format-guessing.test.ts` — 17
 - `tests/guesser.test.ts` — 45
 - `tests/hooks.test.ts` — 12
-- `tests/interactive-flow.test.ts` — 6
+- `tests/interactive-flow.test.ts` — 8
 - `tests/literal-scrub.test.ts` — 12
 - `tests/performance.test.ts` — 21
 - `tests/perl-scrubber.test.ts` — 30
@@ -72,7 +72,7 @@ npm run test:cross
 - `tests/usage-config.test.ts` — 23
 - `tests/write-edit-scrub.test.ts` — 13
 
-Total: **656** tests.
+Total: **658** tests.
 
 ## Coverage map (high level)
 
@@ -90,6 +90,6 @@ Total: **656** tests.
 - `vault add` coverage reflects the current `--use` flow (`api`, `cli`, `browser-login`, `browser-session`) and strict `--yes` validation.
 - Browser-session coverage includes:
   - inline cookie JSON via `--key`
-  - file path via `--cookie-file` or `--key`
+  - file path via `--key`
   - re-prompt behavior for invalid/empty interactive input
   - plaintext source warning beha[VAULT:gmail-app]tion is declined or skipped

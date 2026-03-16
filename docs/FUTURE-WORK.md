@@ -203,3 +203,6 @@ rl.on("line", (l) => {
 **Tradeoff:** Node process startup (~50ms) vs Perl startup (~5ms). Acceptable since the scrubber runs once per exec call, and the subprocess itself takes much longer.
 
 **Current mitigation:** `vault-setup.sh` auto-installs Perl on Debian/Ubuntu/Alpine/RHEL. The `install.sh` script warns if Perl is missing.
+
+## --use without --yes: prompt for missing fields?
+Currently `--use` without `--yes` still errors on missing fields instead of prompting. This makes `--yes` redundant for the `--use` path — if you have all the fields, it works with or without `--yes`. Consider: `--use` without `--yes` could prompt for missing sub-fields (e.g., `--use api` without `--url` → prompt for URL). `--yes` would then mean "don't prompt, error if incomplete." This would make `--use` a hybrid path: skip the menu but still get help filling in details.

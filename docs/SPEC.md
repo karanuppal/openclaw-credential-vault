@@ -286,8 +286,10 @@ Add a credential to the vault.
 
 ```bash
 openclaw vault add <tool> --key <credential> [--yes]
-openclaw vault add <tool> --type browser-cookie --domain <domain>
-openclaw vault add <tool> --type browser-password --domain <domain> --key <password>
+openclaw vault add <tool> --key <credential> --use api --url <pattern> [--header <name>] [--no-bearer] [--yes]
+openclaw vault add <tool> --key <credential> --use cli --command <name> --env <var> [--yes]
+openclaw vault add <tool> --key <credential> --use browser-login --domain <domain> [--yes]
+openclaw vault add <tool> --key <cookie-json-or-file> --use browser-session --domain <domain> [--yes]
 ```
 
 **Options:**

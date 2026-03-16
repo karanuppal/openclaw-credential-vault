@@ -8,7 +8,7 @@ Encrypted credential management for [OpenClaw](https://openclaw.ai). Keeps API k
 - **Encryption at rest.** Each credential is individually encrypted with AES-256-GCM. Even if someone reads your vault directory, they get ciphertext.
 - **OS-level isolation.** A dedicated system user owns the credential files. The agent process can't read them — decryption happens in a separate, sandboxed Rust binary.
 - **Automatic output scrubbing.** Credentials are caught and redacted in tool output, outbound messages, and session transcripts through multiple independent layers.
-- **Thoroughly tested.** 656 tests across 34 files covering crypto, injection, scrubbing, adversarial attacks, false positives, and clean-machine install verification.
+- **Thoroughly tested.** 658 tests across 34 files covering crypto, injection, scrubbing, adversarial attacks, false positives, and clean-machine install verification.
 
 ## Install
 
