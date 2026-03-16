@@ -122,7 +122,7 @@ describe("browser-session end-to-end", () => {
     expect(logs.join("\n")).toContain("Source file securely deleted");
   });
 
-  it("keeps so[VAULT:gmail-app] declines delete prompt", async () => {
+  it("keeps source file and logs war[VAULT:gmail-app]ines delete prompt", async () => {
     const cookieFile = path.join(tmpDir, "cookies-keep.json");
     fs.writeFileSync(cookieFile, JSON.stringify([{ name: "sid", value: "cookie-secret", domain: ".gumroad.com", path: "/", expires: -1, httpOnly: true, secure: true, sameSite: "Lax" }]));
 
@@ -137,5 +137,64 @@ describe("browser-session end-to-end", () => {
     });
 
     expect(fs.existsSync(cookieFile)).toBe(true);
+    expect(logs.join("\n")).toContain("Source file still exists");
+  });
+
+  it("accepts inline cookie JSON via --key (starts with [)", async () => {
+    const inlineCookies = JSON.stringify([{ name: "sid", value: "inline-secret", domain: ".gumroad.com", path: "/", expires: -1, httpOnly: true, secure: true, sameSite: "Lax" }]);
+
+    const program = createMockProgram();
+    registerCliCommands(program as any);
+    await getAddAction(program)("gumroad-inline", {
+      key: inlineCookies,
+      use: "browser-session",
+      domain: ".gumroad.com",
+      yes: true,
+    });
+
+    const cfg = readConfig(tmpDir).tools["gumroad-inline"];
+    expect(cfg).toBeDefined();
+    expect(cfg.inject[0].type).toBe("browser-cookie");
+    expect(cfg.inject[0].domainPin).toEqual([".gumroad.com"]);
+    expect(logs.join("\n")).toContain("shell history");
+  });
+
+  it("accepts --key as file path when it points to an existing file", async () => {
+    const cookieFile = path.join(tmpDir, "cookies-via-key.json");
+    fs.writeFileSync(cookieFile, JSON.stringify([{ name: "sid", value: "file-secret", domain: ".gumroad.com", path: "/", expires: -1, httpOnly: true, secure: true, sameSite: "Lax" }]));
+
+    const program = createMockProgram();
+    registerCliCommands(program as any);
+    await getAddAction(program)("gumroad-keyfile", {
+      key: cookieFile,
+      use: "browser-session",
+      domain: ".gumroad.com",
+      yes: true,
+    });
+
+    const cfg = readConfig(tmpDir).tools["gumroad-keyfile"];
+    expect(cfg).toBeDefined();
+    expect(cfg.inject[0].type).toBe("browser-cookie");
+    // --yes path: warns that source file still exists
+    expect(logs.join("\n")).toContain("Source file still exists");
+  });
+
+  it("non-interactive --yes with file warns about plaintext file", async () => {
+    const cookieFile = path.join(tmpDir, "cookies-yes-warn.json");
+    fs.writeFileSync(cookieFile, JSON.stringify([{ name: "sid", value: "v1", domain: ".gumroad.com", path: "/", expires: -1, httpOnly: true, secure: true, sameSite: "Lax" }]));
+
+    const program = createMockProgram();
+    registerCliCommands(program as any);
+    await getAddAction(program)("gumroad-yes-warn", {
+      use: "browser-session",
+      domain: ".gumroad.com",
+      cookieFile,
+      yes: true,
+    });
+
+    const cfg = readConfig(tmpDir).tools["gumroad-yes-warn"];
+    expect(cfg).toBeDefined();
+    // --yes skips delete prompt but must warn about plaintext file
+    expect(logs.join("\n")).toContain("Source file still exists");
   });
 });

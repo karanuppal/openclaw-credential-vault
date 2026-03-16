@@ -293,9 +293,14 @@ async function handleVaultAddWithUse(
         console.error("Error: --yes requires either a known credential format or --use with all required flags.");
         return;
       }
-      if (type === "browser-session" && (!options.domain || !options.cookieFile)) {
-        console.error("Error: --yes requires either a known credential format or --use with all required flags.");
-        return;
+      if (type === "browser-session") {
+        const hasCookieData = options.cookieFile ||
+          (options.key && (options.key.startsWith("[") || options.key.startsWith("{"))) ||
+          (options.key && fs.existsSync(options.key));
+        if (!options.domain || !hasCookieData) {
+          console.error("Error: --yes requires either a known credential format or --use with all required flags.");
+          return;
+        }
       }
     }
   }
@@ -307,20 +312,39 @@ async function handleVaultAddWithUse(
 
   // Handle browser-session: read cookie file and encrypt
   if (hasBrowserSession) {
-    if (!options.cookieFile) {
-      console.error("Error: --cookie-file is required for --use browser-session");
-      return;
-    }
     if (!options.domain) {
       console.error("Error: --domain is required for --use browser-session");
       return;
     }
 
+    // Determine cookie source: --cookie-file takes priority, then --key as inline JSON or file path
     let fileContent: string;
-    try {
-      fileContent = fs.readFileSync(options.cookieFile, "utf-8");
-    } catch (err) {
-      console.error(`Error reading cookie file: ${(err as Error).message}`);
+    let cookieSourcePath: string | null = null;
+    let cookieIsInline = false;
+
+    if (options.cookieFile) {
+      cookieSourcePath = options.cookieFile;
+      try {
+        fileContent = fs.readFileSync(options.cookieFile, "utf-8");
+      } catch (err) {
+        console.error(`Error reading cookie file: ${(err as Error).message}`);
+        return;
+      }
+    } else if (options.key && (options.key.startsWith("[") || options.key.startsWith("{"))) {
+      // Inline cookie JSON provided via --key
+      fileContent = options.key;
+      cookieIsInline = true;
+    } else if (options.key && fs.existsSync(options.key)) {
+      // --key is a file path
+      cookieSourcePath = options.key;
+      try {
+        fileContent = fs.readFileSync(options.key, "utf-8");
+      } catch (err) {
+        console.error(`Error reading cookie file: ${(err as Error).message}`);
+        return;
+      }
+    } else {
+      console.error("Error: --cookie-file is required for --use browser-session (or provide inline cookie JSON via --key)");
       return;
     }
 
@@ -354,18 +378,27 @@ async function handleVaultAddWithUse(
     }
     console.log(`✓ Stored ${cookies.length} cookies for ${options.domain} (AES-256-GCM encrypted)`);
 
-    // Prompt to delete source file (skip if --yes)
-    if (!options.yes) {
-      const deleteAnswer = await promptUser(`  Delete source file ${options.cookieFile}? [Y/n]: `);
-      if (deleteAnswer.toLowerCase() !== "n" && deleteAnswer.toLowerCase() !== "no") {
-        await secureDeleteFile(options.cookieFile);
-        console.log("  ✓ Source file securely deleted.");
+    // Source file/history warnings
+    if (cookieSourcePath) {
+      if (!options.yes) {
+        const deleteAnswer = await promptUser(`  Delete source file ${cookieSourcePath}? [Y/n]: `);
+        if (deleteAnswer.toLowerCase() !== "n" && deleteAnswer.toLowerCase() !== "no") {
+          await secureDeleteFile(cookieSourcePath);
+          console.log("  ✓ Source file securely deleted.");
+        } else {
+          console.log(`  ⚠ Source file still exists at ${cookieSourcePath}`);
+        }
+      } else {
+        // --yes skips the delete prompt; warn that plaintext file still exists
+        console.log(`  ⚠ Source file still exists at ${cookieSourcePath}`);
       }
+    } else if (cookieIsInline) {
+      console.log("  ⚠ Cookie JSON was passed via --key — it may be visible in shell history.");
     }
 
     usage.browserSession = {
       domain: options.domain,
-      cookieFilePath: options.cookieFile,
+      cookieFilePath: cookieSourcePath ?? "inline",
     };
   } else {
     // Non-browser-session types need --key
@@ -683,39 +716,66 @@ export function registerCliCommands(program: CliProgram): void {
           usage.browserLogin = { domain: domainAnswer.trim() };
 
         } else if (num === 4) {
-          // Browser session — need cookie file
+          // Browser session — need cookie data
           const domainAnswer = await promptUser("  Cookie domain: ");
-          const cookieFileAnswer = await promptUser("  Path to cookies file (JSON or Netscape format): ");
-          const cookieFilePath = cookieFileAnswer.trim();
+          const domain = domainAnswer.trim();
 
-          // Read and encrypt cookie data
-          let fileContent: string;
-          try {
-            fileContent = fs.readFileSync(cookieFilePath, "utf-8");
-          } catch (err) {
-            console.error(`Error reading cookie file: ${(err as Error).message}`);
-            return;
+          // Re-prompt until valid cookie data is provided
+          let cookieContent: string | null = null;
+          let cookieFilePath: string | null = null;
+          let cookieIsInline = false;
+
+          while (!cookieContent) {
+            const input = await promptUser("  Paste cookie JSON or enter file path: ");
+            const trimmed = input.trim();
+
+            if (!trimmed) {
+              console.log("  Please enter cookie JSON or a valid file path.");
+              continue;
+            }
+
+            if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+              // Inline JSON
+              cookieContent = trimmed;
+              cookieIsInline = true;
+              break;
+            }
+
+            if (fs.existsSync(trimmed)) {
+              // File path
+              try {
+                cookieContent = fs.readFileSync(trimmed, "utf-8");
+                cookieFilePath = trimmed;
+                break;
+              } catch (err) {
+                console.log(`  Could not read file: ${(err as Error).message}. Try again.`);
+                continue;
+              }
+            }
+
+            // Neither valid JSON nor existing file
+            console.log(`  File not found: "${trimmed}". Enter cookie JSON or a valid file path.`);
           }
 
+          // Read and encrypt cookie data
           let cookies: PlaywrightCookie[];
           try {
-            const trimmed = fileContent.trim();
+            const trimmed = cookieContent!.trim();
             if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
-              cookies = parseCookieJson(fileContent);
+              cookies = parseCookieJson(cookieContent!);
             } else {
-              cookies = parseNetscapeCookies(fileContent);
+              cookies = parseNetscapeCookies(cookieContent!);
             }
           } catch (err) {
-            console.error(`Error parsing cookie file: ${(err as Error).message}`);
+            console.error(`Error parsing cookie data: ${(err as Error).message}`);
             return;
           }
 
           if (cookies.length === 0) {
-            console.error("Error: No valid cookies found in file.");
+            console.error("Error: No valid cookies found.");
             return;
           }
 
-          const domain = domainAnswer.trim();
           const credentialPayload = JSON.stringify({
             cookies,
             domain,
@@ -730,16 +790,20 @@ export function registerCliCommands(program: CliProgram): void {
           console.log(`  ✓ Cookies encrypted and stored.`);
           credentialEncryptedAsCookies = true;
 
-          // Prompt to delete source file
-          const deleteAnswer = await promptUser(`  Delete source file ${cookieFilePath}? [Y/n]: `);
-          if (deleteAnswer.toLowerCase() !== "n" && deleteAnswer.toLowerCase() !== "no") {
-            await secureDeleteFile(cookieFilePath);
-            console.log("  ✓ Source file securely deleted.");
-          } else {
-            console.log(`  ⚠ Source file still exists at ${cookieFilePath}`);
+          if (cookieIsInline) {
+            console.log("  ⚠ Cookie JSON was provided inline — it may be visible in shell history.");
+          } else if (cookieFilePath) {
+            // Prompt to delete source file
+            const deleteAnswer = await promptUser(`  Delete source file ${cookieFilePath}? [Y/n]: `);
+            if (deleteAnswer.toLowerCase() !== "n" && deleteAnswer.toLowerCase() !== "no") {
+              await secureDeleteFile(cookieFilePath);
+              console.log("  ✓ Source file securely deleted.");
+            } else {
+              console.log(`  ⚠ Source file still exists at ${cookieFilePath}`);
+            }
           }
 
-          usage.browserSession = { domain, cookieFilePath };
+          usage.browserSession = { domain, cookieFilePath: cookieFilePath ?? "inline" };
         }
       }
 
