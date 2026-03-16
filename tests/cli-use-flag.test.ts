@@ -134,7 +134,8 @@ describe("vault add --use parsing", () => {
   it("trims whitespace in --use api, cli", async () => {
     const program = createMockProgram();
     registerCliCommands(program as any);
-    await getAddAction(program)("svc-trim", { key: "A".repeat(40), use: "api, cli", url: "*svc.io/*", command: "svc", yes: true });
+    // --yes requires explicit --command AND --env for cli
+    await getAddAction(program)("svc-trim", { key: "A".repeat(40), use: "api, cli", url: "*svc.io/*", command: "svc", env: "SVC_TOKEN", yes: true });
 
     const inject = readConfig(tmpDir).tools["svc-trim"].inject;
     expect(inject.some((r) => r.tool === "web_fetch")).toBe(true);
@@ -233,6 +234,39 @@ describe("vault add --use parsing", () => {
       const program = createMockProgram();
       registerCliCommands(program as any);
       await getAddAction(program)("unknown", { key: "this is unknown format value", yes: true });
+
+      expect(errors.some((e) => e.includes("--yes requires either a known credential format or --use with all required flags"))).toBe(true);
+    });
+
+    it("--yes with --use cli + --command + --env succeeds", async () => {
+      const program = createMockProgram();
+      registerCliCommands(program as any);
+      await getAddAction(program)("cli-ok", { key: "A".repeat(40), use: "cli", command: "mycli", env: "MYCLI_TOKEN", yes: true });
+
+      expect(readConfig(tmpDir).tools["cli-ok"]).toBeDefined();
+      expect(errors.length).toBe(0);
+    });
+
+    it("--yes with --use cli but no --command errors", async () => {
+      const program = createMockProgram();
+      registerCliCommands(program as any);
+      await getAddAction(program)("cli-no-cmd", { key: "A".repeat(40), use: "cli", env: "MYCLI_TOKEN", yes: true });
+
+      expect(errors.some((e) => e.includes("--yes requires either a known credential format or --use with all required flags"))).toBe(true);
+    });
+
+    it("--yes with --use cli but no --env errors", async () => {
+      const program = createMockProgram();
+      registerCliCommands(program as any);
+      await getAddAction(program)("cli-no-env", { key: "A".repeat(40), use: "cli", command: "mycli", yes: true });
+
+      expect(errors.some((e) => e.includes("--yes requires either a known credential format or --use with all required flags"))).toBe(true);
+    });
+
+    it("--yes with --use cli but no --command and no --env errors", async () => {
+      const program = createMockProgram();
+      registerCliCommands(program as any);
+      await getAddAction(program)("cli-no-flags", { key: "A".repeat(40), use: "cli", yes: true });
 
       expect(errors.some((e) => e.includes("--yes requires either a known credential format or --use with all required flags"))).toBe(true);
     });

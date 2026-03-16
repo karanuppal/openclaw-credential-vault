@@ -289,6 +289,10 @@ async function handleVaultAddWithUse(
         console.error("Error: --yes requires either a known credential format or --use with all required flags.");
         return;
       }
+      if (type === "cli" && (!options.command || !options.env)) {
+        console.error("Error: --yes requires either a known credential format or --use with all required flags.");
+        return;
+      }
       if (type === "browser-login" && !options.domain) {
         console.error("Error: --yes requires either a known credential format or --use with all required flags.");
         return;
