@@ -898,15 +898,19 @@ export function registerCliCommands(program: CliProgram): void {
       console.log("");
 
       // Offer suggested scrub patterns from format guesser
+      let acceptedDetectedPattern = false;
       if (guess.suggestedScrub.patterns.length > 0) {
         for (const pattern of guess.suggestedScrub.patterns) {
           const includeAnswer = await promptUser(`  Detected pattern: \`${pattern}\` — include? [Y/n]: `);
           if (includeAnswer.toLowerCase() !== "n" && includeAnswer.toLowerCase() !== "no") {
             usage.scrubPatterns.push(pattern);
+            acceptedDetectedPattern = true;
           }
         }
-      } else {
-        // Only ask for manual regex if no patterns were auto-detected
+      }
+
+      // Skip manual prompt if user accepted a detected pattern; offer it if they declined or none existed
+      if (!acceptedDetectedPattern) {
         const addScrub = await promptUser("  Add a regex pattern to also catch similar credentials? [N/y]: ");
         if (addScrub.toLowerCase() === "y" || addScrub.toLowerCase() === "yes") {
           const pattern = await promptUser("  Regex pattern: ");

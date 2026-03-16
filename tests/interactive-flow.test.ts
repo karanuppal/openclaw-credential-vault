@@ -97,7 +97,8 @@ describe("vault add interactive flow", () => {
       "api.example.com",   // API domain
       "",                  // header -> default Authorization
       "",                  // format -> default Bearer $token
-      "n",                 // include detected scrub pattern? (generic-api-key has one)
+      "n",                 // decline detected scrub pattern
+      "n",                 // decline manual regex (offered because detected was declined)
       "y",                 // save
     ]);
 
@@ -134,7 +135,8 @@ describe("vault add interactive flow", () => {
       "2",
       "gh",
       "GITHUB_TOKEN",
-      "n",                 // include detected scrub pattern? (generic-api-key has one)
+      "n",                 // decline detected scrub pattern
+      "n",                 // decline manual regex
       "y",
     ]);
 
@@ -157,7 +159,8 @@ describe("vault add interactive flow", () => {
       "Bearer $token",
       "multi",
       "MULTI_TOKEN",
-      "n",                 // include detected scrub pattern? (generic-api-key has one)
+      "n",                 // decline detected scrub pattern
+      "n",                 // decline manual regex
       "y",
     ]);
 
@@ -248,7 +251,8 @@ describe("vault add interactive flow", () => {
       "api.nosave.com",
       "",
       "",
-      "n",                 // include detected scrub pattern? (generic-api-key has one)
+      "n",                 // decline detected scrub pattern
+      "n",                 // decline manual regex
       "n",                 // save
     ]);
 
