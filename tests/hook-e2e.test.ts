@@ -1219,3 +1219,334 @@ describe("Hook E2E: Edge Cases", () => {
     expect(env.STRIPE_API_KEY).toBe("sk_test_newcred1234567890abcdef");
   });
 });
+
+// ================================================================
+// macOS Migration Fixes — Regression Tests
+// ================================================================
+describe("Hook E2E: macOS Fix — binary mode with missing resolver", () => {
+  afterEach(cleanup);
+
+  it("binary mode with no resolver: env vars are NOT set to literal '$vault:X'", async () => {
+    // This is the exact bug: resolverMode=binary, no binary exists,
+    // GH_TOKEN was being set to the literal string "$vault:github"
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vault-macos-e2e-"));
+    vaultDir = path.join(tmpDir, ".openclaw", "vault");
+    fs.mkdirSync(vaultDir, { recursive: true });
+    originalHome = process.env.HOME;
+    process.env.HOME = tmpDir;
+
+    initConfig(vaultDir, "machine");
+    const meta = readMeta(vaultDir);
+    passphrase = getMachinePassphrase(meta!.installTimestamp);
+
+    // Write credential
+    await writeCredentialFile(vaultDir, "github", "ghp_realtoken123456789012345678901234", passphrase);
+
+    // Write config with binary mode (no resolver binary exists on macOS)
+    let config = readConfig(vaultDir);
+    config = {
+      ...config,
+      resolverMode: "binary",
+    };
+    config = upsertTool(config, {
+      name: "github",
+      addedAt: new Date().toISOString(),
+      lastRotated: new Date().toISOString(),
+      inject: [
+        {
+          tool: "exec",
+          commandMatch: "gh *",
+          env: { GH_TOKEN: "$vault:github", GITHUB_TOKEN: "$vault:github" },
+        },
+      ],
+      scrub: { patterns: ["ghp_[a-zA-Z0-9]{36}"] },
+    });
+    writeConfig(vaultDir, config);
+
+    // Register plugin with binary mode
+    register(buildMockApi());
+
+    // Run a matching command
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const result = await handleBeforeToolCall(
+      {
+        toolName: "exec",
+        params: { command: "gh auth status" },
+      },
+      makeBeforeCtx("exec"),
+    );
+
+    expect(result).toBeDefined();
+    const env = result!.params!.env as Record<string, string> | undefined;
+
+    // THE FIX: env vars should either be absent or contain the real credential
+    // They must NEVER be the literal string "$vault:github"
+    if (env?.GH_TOKEN) {
+      expect(env.GH_TOKEN).not.toBe("$vault:github");
+    }
+    if (env?.GITHUB_TOKEN) {
+      expect(env.GITHUB_TOKEN).not.toBe("$vault:github");
+    }
+
+    // Should have logged a warning about skipping injection
+    const warnings = errorSpy.mock.calls.filter(
+      (args) => typeof args[0] === "string" && args[0].includes("could not be resolved")
+    );
+    expect(warnings.length).toBeGreaterThan(0);
+
+    errorSpy.mockRestore();
+  });
+
+  it("binary mode with no resolver: command runs without injected env vars", async () => {
+    // Verify the command params still work — just without credentials
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vault-macos-e2e-"));
+    vaultDir = path.join(tmpDir, ".openclaw", "vault");
+    fs.mkdirSync(vaultDir, { recursive: true });
+    originalHome = process.env.HOME;
+    process.env.HOME = tmpDir;
+
+    initConfig(vaultDir, "machine");
+    const meta = readMeta(vaultDir);
+    passphrase = getMachinePassphrase(meta!.installTimestamp);
+
+    await writeCredentialFile(vaultDir, "github", "ghp_realtoken123456789012345678901234", passphrase);
+
+    let config = readConfig(vaultDir);
+    config = { ...config, resolverMode: "binary" };
+    config = upsertTool(config, {
+      name: "github",
+      addedAt: new Date().toISOString(),
+      lastRotated: new Date().toISOString(),
+      inject: [{
+        tool: "exec",
+        commandMatch: "gh *",
+        env: { GH_TOKEN: "$vault:github" },
+      }],
+      scrub: { patterns: [] },
+    });
+    writeConfig(vaultDir, config);
+    register(buildMockApi());
+
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await handleBeforeToolCall(
+      {
+        toolName: "exec",
+        params: { command: "gh pr list" },
+      },
+      makeBeforeCtx("exec"),
+    );
+
+    // The original command should be preserved (not wrapped in perl scrubber
+    // since no credentials were resolved)
+    expect(result!.params!.command).toBe("gh pr list");
+
+    vi.restoreAllMocks();
+  });
+});
+
+describe("Hook E2E: macOS Fix — hot-reload resolverMode change", () => {
+  afterEach(cleanup);
+
+  it("switching tools.yaml from binary→inline mid-session enables injection", async () => {
+    // Start with binary mode (broken — no resolver)
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vault-macos-e2e-"));
+    vaultDir = path.join(tmpDir, ".openclaw", "vault");
+    fs.mkdirSync(vaultDir, { recursive: true });
+    originalHome = process.env.HOME;
+    process.env.HOME = tmpDir;
+
+    initConfig(vaultDir, "machine");
+    const meta = readMeta(vaultDir);
+    passphrase = getMachinePassphrase(meta!.installTimestamp);
+
+    await writeCredentialFile(vaultDir, "github", "ghp_realtoken123456789012345678901234", passphrase);
+
+    let config = readConfig(vaultDir);
+    config = { ...config, resolverMode: "binary" };
+    config = upsertTool(config, {
+      name: "github",
+      addedAt: new Date().toISOString(),
+      lastRotated: new Date().toISOString(),
+      inject: [{
+        tool: "exec",
+        commandMatch: "gh *",
+        env: { GH_TOKEN: "$vault:github" },
+      }],
+      scrub: { patterns: [] },
+    });
+    writeConfig(vaultDir, config);
+    register(buildMockApi());
+
+    // First call: binary mode, no resolver — injection should be skipped
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const result1 = await handleBeforeToolCall(
+      { toolName: "exec", params: { command: "gh auth status" } },
+      makeBeforeCtx("exec"),
+    );
+
+    const env1 = result1!.params!.env as Record<string, string> | undefined;
+    // Should NOT have the placeholder
+    if (env1?.GH_TOKEN) {
+      expect(env1.GH_TOKEN).not.toBe("$vault:github");
+    }
+
+    // Now switch to inline mode on disk
+    await new Promise(r => setTimeout(r, 50)); // ensure mtime changes
+    config = readConfig(vaultDir);
+    config = { ...config, resolverMode: "inline" };
+    writeConfig(vaultDir, config);
+
+    // Second call: should hot-reload and use inline mode → injection works
+    const result2 = await handleBeforeToolCall(
+      { toolName: "exec", params: { command: "gh pr list" } },
+      makeBeforeCtx("exec"),
+    );
+
+    const env2 = result2!.params!.env as Record<string, string>;
+    expect(env2).toBeDefined();
+    expect(env2.GH_TOKEN).toBe("ghp_realtoken123456789012345678901234");
+
+    vi.restoreAllMocks();
+  });
+});
+
+describe("Hook E2E: macOS Fix — inline mode full round-trip", () => {
+  afterEach(cleanup);
+
+  it("inline mode: credential encrypted, injected, and scrubbed end-to-end", async () => {
+    await setupVault({
+      "github": {
+        credential: "ghp_livetoken99887766554433221100aabb",
+        config: {
+          inject: [{
+            tool: "exec",
+            commandMatch: "gh *",
+            env: { GH_TOKEN: "$vault:github" },
+          }],
+          scrub: { patterns: ["ghp_[a-zA-Z0-9]{36}"] },
+        },
+      },
+    });
+
+    // Step 1: Injection — credential appears in params.env
+    const injectResult = await handleBeforeToolCall(
+      { toolName: "exec", params: { command: "gh api user" } },
+      makeBeforeCtx("exec"),
+    );
+
+    const env = injectResult!.params!.env as Record<string, string>;
+    expect(env.GH_TOKEN).toBe("ghp_livetoken99887766554433221100aabb");
+
+    // Step 2: Scrubbing — credential in tool output gets redacted
+    const scrubResult = handleToolResultPersist(
+      {
+        toolName: "exec",
+        message: {
+          role: "tool",
+          content: "Token is ghp_livetoken99887766554433221100aabb and it works",
+        },
+      },
+      { toolName: "exec" },
+    );
+
+    const scrubbedContent = scrubResult!.message!.content as string;
+    expect(scrubbedContent).not.toContain("ghp_livetoken99887766554433221100aabb");
+    expect(scrubbedContent).toContain("[VAULT:github]");
+
+    // Step 3: Message write scrubbing — credential in outbound message gets redacted
+    const msgResult = handleBeforeMessageWrite(
+      {
+        message: {
+          role: "assistant",
+          content: "The token ghp_livetoken99887766554433221100aabb was used",
+        },
+      },
+      {},
+    );
+
+    const msgContent = msgResult!.message!.content as string;
+    expect(msgContent).not.toContain("ghp_livetoken99887766554433221100aabb");
+    expect(msgContent).toContain("[VAULT:github]");
+  });
+
+  it("inline mode: web_fetch header injection works correctly", async () => {
+    await setupVault({
+      "myapi": {
+        credential: "secret-api-key-12345",
+        config: {
+          inject: [{
+            tool: "web_fetch",
+            urlMatch: "*api.myservice.com/*",
+            headers: { "x-api-key": "$vault:myapi" },
+          }],
+          scrub: { patterns: [] },
+        },
+      },
+    });
+
+    const result = await handleBeforeToolCall(
+      {
+        toolName: "web_fetch",
+        params: { url: "https://api.myservice.com/v1/data" },
+      },
+      makeBeforeCtx("web_fetch"),
+    );
+
+    const headers = result!.params!.headers as Record<string, string>;
+    expect(headers["x-api-key"]).toBe("secret-api-key-12345");
+  });
+
+  it("inline mode: header injection skipped when credential resolution fails", async () => {
+    // Set up with a tool that references a non-existent credential
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vault-macos-e2e-"));
+    vaultDir = path.join(tmpDir, ".openclaw", "vault");
+    fs.mkdirSync(vaultDir, { recursive: true });
+    originalHome = process.env.HOME;
+    process.env.HOME = tmpDir;
+
+    initConfig(vaultDir, "machine");
+
+    // Write config referencing a credential that doesn't have an .enc file
+    // Note: header value must be exactly "$vault:ghost" (not "Bearer $vault:ghost")
+    // because resolveVaultRef only matches strings that are entirely $vault:X
+    let config = readConfig(vaultDir);
+    config = upsertTool(config, {
+      name: "ghost",
+      addedAt: new Date().toISOString(),
+      lastRotated: new Date().toISOString(),
+      inject: [{
+        tool: "web_fetch",
+        urlMatch: "*api.ghost.com/*",
+        headers: { "x-api-key": "$vault:ghost" },
+      }],
+      scrub: { patterns: [] },
+    });
+    writeConfig(vaultDir, config);
+    register(buildMockApi());
+
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await handleBeforeToolCall(
+      {
+        toolName: "web_fetch",
+        params: { url: "https://api.ghost.com/v1/posts" },
+      },
+      makeBeforeCtx("web_fetch"),
+    );
+
+    // Header should NOT be set at all (credential missing = skip injection)
+    const headers = result!.params!.headers as Record<string, string> | undefined;
+    expect(headers?.["x-api-key"]).toBeUndefined();
+
+    // Should have logged a warning
+    const warnings = (console.error as any).mock.calls.filter(
+      (args: any[]) => typeof args[0] === "string" && args[0].includes("could not be resolved")
+    );
+    expect(warnings.length).toBeGreaterThan(0);
+
+    vi.restoreAllMocks();
+  });
+});
