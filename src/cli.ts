@@ -106,14 +106,33 @@ function getPassphrase(vaultDir: string): string {
  */
 /**
  * Check if a binary is actually executable on this platform (not just existing on disk).
- * Catches the case where a Linux binary exists in a macOS worktree.
+ * Catches the case where a Linux binary exists in a macOS worktree (ENOEXEC).
+ *
+ * We spawn with stdin closed immediately — the resolver will read empty input,
+ * fail to parse JSON, and exit with an error. That's fine — we only care that
+ * the OS could load and start the process (no ENOEXEC / wrong architecture).
  */
 function isExecutable(binaryPath: string): boolean {
   try {
     fs.accessSync(binaryPath, fs.constants.X_OK);
-    // Also try to detect architecture mismatch: run with --version or just spawn briefly
-    const { execFileSync } = require("node:child_process");
-    execFileSync(binaryPath, ["--version"], { timeout: 5000, stdio: "ignore" });
+    // Spawn the binary with no stdin to verify it can actually execute.
+    // The resolver expects JSON on stdin, so it will exit with an error —
+    // but a non-ENOEXEC error means the binary is runnable on this platform.
+    const { spawnSync } = require("node:child_process");
+    const result = spawnSync(binaryPath, [], {
+      input: "", // empty stdin — resolver fails to parse, exits non-zero
+      timeout: 5000,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    // ENOEXEC / signal-killed = wrong platform. Any normal exit (even error) = executable.
+    if (result.error) {
+      const code = (result.error as NodeJS.ErrnoException).code;
+      // ENOEXEC = wrong binary format, EACCES = permission denied
+      if (code === "ENOEXEC" || code === "EACCES") return false;
+      // Other spawn errors (e.g. timeout) — assume not executable
+      return false;
+    }
+    // Process ran and exited (even with error code) = binary is executable on this platform
     return true;
   } catch {
     return false;
