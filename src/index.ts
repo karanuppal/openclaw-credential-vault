@@ -302,19 +302,29 @@ function _resetResolverState(): void {
   resolverMismatchWarned = false;
 }
 
+/** Result from resolveVaultRef — includes resolved credential or null if resolution failed */
+interface VaultRefResult {
+  /** Resolved credential value, or null if resolution failed */
+  value: string | null;
+  /** Whether the reference was a $vault: placeholder (vs plain text) */
+  wasVaultRef: boolean;
+}
+
 async function resolveVaultRef(
   value: string,
   st: VaultState,
   context?: string,
   command?: string
-): Promise<string> {
+): Promise<VaultRefResult> {
   const match = value.match(/^\$vault:(.+)$/);
-  if (!match) return value;
+  if (!match) return { value, wasVaultRef: false };
   const result = await getCredential(match[1], st, context, command);
   if (result.warning) {
     pendingResolverWarnings.push(result.warning);
   }
-  return result.credential ?? value; // Return original if can't resolve
+  // Return null when credential couldn't be resolved — caller must skip injection
+  // Previously returned the literal "$vault:X" string which got injected as a bad token
+  return { value: result.credential, wasVaultRef: true };
 }
 
 /**
@@ -370,9 +380,12 @@ async function handleBeforeToolCall(
       state.config = newConfig;
       state.scrubRules = compileScrubRules(newConfig.tools);
       state.configMtimeMs = currentMtime;
+      // Update resolver mode — previously only updated via SIGUSR2 full reload
+      state.resolverMode = newConfig.resolverMode ?? "inline";
+      state.resolverPath = newConfig.resolverPath;
       // Clear credential cache so new tools get decrypted fresh
       state.credentialCache.clear();
-      console.log(`[vault] Config hot-reloaded — ${Object.keys(newConfig.tools).length} tool(s)`);
+      console.log(`[vault] Config hot-reloaded — ${Object.keys(newConfig.tools).length} tool(s), resolver: ${state.resolverMode}`);
     }
   } catch { /* stat failure is non-fatal */ }
 
@@ -549,15 +562,27 @@ async function handleBeforeToolCall(
       if (rule.env) {
         const existingEnv = (params.env ?? {}) as Record<string, string>;
         const scrubPairs: Array<{b64Value: string; replacement: string}> = [];
+        let anyResolved = false;
         for (const [envKey, envVal] of Object.entries(rule.env)) {
           const resolved = await resolveVaultRef(envVal, state, toolName, cmdStr);
-          existingEnv[envKey] = resolved;
+          if (resolved.value === null) {
+            // Credential resolution failed — do NOT inject this env var
+            // Previously injected the literal "$vault:X" string which caused "invalid token" errors
+            console.error(`[vault] ⚠ Skipping env var ${envKey}: credential "${vaultToolName}" could not be resolved`);
+            continue;
+          }
+          existingEnv[envKey] = resolved.value;
+          anyResolved = true;
           // Collect credential values for Perl scrubber (base64-encode to avoid
           // all shell/perl escaping issues with special characters in credentials)
-          const b64Value = Buffer.from(resolved).toString("base64");
-          scrubPairs.push({ b64Value, replacement: `[VAULT:${vaultToolName}]` });
+          if (resolved.wasVaultRef) {
+            const b64Value = Buffer.from(resolved.value).toString("base64");
+            scrubPairs.push({ b64Value, replacement: `[VAULT:${vaultToolName}]` });
+          }
         }
-        params.env = existingEnv;
+        if (anyResolved) {
+          params.env = existingEnv;
+        }
 
         // Append Perl stdout scrubber: decode base64 credential at runtime,
         // replace any occurrence in output. Uses pipefail to preserve exit code.
@@ -573,14 +598,16 @@ async function handleBeforeToolCall(
           params.command = `set -o pipefail; { ${params.command} ; } 2>&1 | perl -pe '${perlScript}'`;
         }
 
-        // Track injection for audit
-        state.currentInjections.push({
-          tool: toolName,
-          credential: vaultToolName,
-          injectionType: "exec-env",
-          command: cmdStr,
-          startTime,
-        });
+        // Track injection for audit (only if something was actually injected)
+        if (anyResolved) {
+          state.currentInjections.push({
+            tool: toolName,
+            credential: vaultToolName,
+            injectionType: "exec-env",
+            command: cmdStr,
+            startTime,
+          });
+        }
       }
 
       // Inject headers
@@ -589,20 +616,28 @@ async function handleBeforeToolCall(
           string,
           string
         >;
+        let anyHeaderResolved = false;
         for (const [headerKey, headerVal] of Object.entries(rule.headers)) {
           const resolved = await resolveVaultRef(headerVal, state, toolName, cmdStr);
-          existingHeaders[headerKey] = resolved;
+          if (resolved.value === null) {
+            console.error(`[vault] ⚠ Skipping header ${headerKey}: credential "${vaultToolName}" could not be resolved`);
+            continue;
+          }
+          existingHeaders[headerKey] = resolved.value;
+          anyHeaderResolved = true;
         }
-        params.headers = existingHeaders;
+        if (anyHeaderResolved) {
+          params.headers = existingHeaders;
 
-        // Track injection for audit
-        state.currentInjections.push({
-          tool: toolName,
-          credential: vaultToolName,
-          injectionType: "http-header",
-          command: cmdStr,
-          startTime,
-        });
+          // Track injection for audit
+          state.currentInjections.push({
+            tool: toolName,
+            credential: vaultToolName,
+            injectionType: "http-header",
+            command: cmdStr,
+            startTime,
+          });
+        }
       }
     }
   }
