@@ -110,6 +110,36 @@ github:
 
 ---
 
+### 3. Shell Interpolation Credential Persistence
+
+**Problem:** The vault correctly injects credentials into subprocesses and sc[VAULT:gmail-app]layed output. However, the LLM can capture a credential via shell variable interpolation and embed it into a persistent location that the vault doesn't monitor.
+
+**Real-world example (observed 2026-03-18):**
+```bash
+export GHTOKEN=[VAULT:env-redacted] auth token) && gh cs ssh -c ... "git remote set-url origin https://x-access-token:${GHTOKEN}@github.com/..."
+```
+
+What happened:
+1. `gh auth token` ran locally on the host (vault injected the credential correctly)
+2. `GHTOKEN` captured the output as a shell variable on the host
+3. `${GHTOKEN}` was interpolated into the SSH command string before it was sent
+4. The vault scrubbed the output in logs (showed `[VAULT:env-redacted]`)
+5. BUT the token persisted in the codespace's `.git/config` as the remote URL
+
+The vault worked correctly for its designed scope (inject + scrub output), but the LLM used shell interpolation to move the credential to a location the vault doesn't monitor (.git/config inside a codespace).
+
+**Threat class:** Credential persistence via file write after shell interpolation. Related to the Landlock filesystem write restriction item above, but this specific case involves a remote write (credential embedded in a command sent to a codespace via SSH).
+
+**Possible mitigations:**
+- Detect `$(gh auth token)` / `$(vault-injected-command)` patterns in command strings and warn/block
+- Post-command cleanup: after git push, reset remote URL to strip embedded tokens
+- Landlock (for local file writes) + egress pinning (for remote writes) together would cover most variants
+- Document as a known limitation: shell interpolation can capture injected credentials mid-flight
+
+**Severity:** Medium. Requires the LLM to actively construct a multi-step shell pipeline that captures and re-embeds the credential. Not a passive leak, but a prompt injection could trigger it.
+
+---
+
 ## UX Improvements
 
 ### 1. Fuzzy match on tool name not found
