@@ -33,7 +33,6 @@ import {
   findMatchingRules,
   KNOWN_TOOLS,
 } from "./registry.js";
-import { findResolverBinary } from "./resolver.js";
 import { compileScrubRules, scrubText } from "./scrubber.js";
 import { readAuditLog, computeAuditStats } from "./audit.js";
 import {
@@ -47,7 +46,7 @@ import {
   parseRawCookieString,
   getEarliestExpiry,
 } from "./browser.js";
-import { ToolConfig, CliProgram, PlaywrightCookie, UsageSelection, InjectionRule, ScrubConfig, VaultConfig } from "./types.js";
+import { ToolConfig, CliProgram, PlaywrightCookie, UsageSelection, InjectionRule, ScrubConfig } from "./types.js";
 
 /**
  * Validate a tool name for safety and filesystem compatibility.
@@ -97,25 +96,6 @@ function getPassphrase(vaultDir: string): string {
   }
   // Machine mode: derive from machine characteristics
   return getMachinePassphrase(meta?.installTimestamp);
-}
-
-/**
- * Check if resolverMode is "binary" but the binary doesn't exist.
- * If so, downgrade to "inline" and warn.
- * Returns the (possibly updated) config.
- */
-export function ensureResolverModeValid(config: VaultConfig, vaultDir: string): VaultConfig {
-  if (config.resolverMode === "binary") {
-    const binaryPath = findResolverBinary(config.resolverPath);
-    if (!binaryPath) {
-      console.log("⚠ Resolver mode is \"binary\" but no resolver binary found.");
-      console.log("  Switching to \"inline\" mode (credentials decrypted in-process).");
-      console.log("  To use binary mode, run: sudo bash vault-setup.sh\n");
-      config = { ...config, resolverMode: "inline" };
-      writeConfig(vaultDir, config);
-    }
-  }
-  return config;
 }
 
 let _promptUserOverride: ((question: string) => Promise<string>) | null = null;
@@ -244,7 +224,7 @@ async function writeToolConfigEntry(
   inject: InjectionRule[],
   scrub: ScrubConfig,
   options: Record<string, unknown>,
-  config: VaultConfig,
+  config: import("./types.js").VaultConfig,
   vaultDir: string
 ): Promise<void> {
   const now = new Date().toISOString();
@@ -295,7 +275,7 @@ async function handleVaultAddWithUse(
     yes?: boolean;
     [key: string]: unknown;
   },
-  config: VaultConfig,
+  config: import("./types.js").VaultConfig,
   vaultDir: string,
   passphrase: string
 ): Promise<void> {
@@ -498,10 +478,7 @@ export function registerCliCommands(program: CliProgram): void {
       const vaultDir = getVaultDir();
 
       const alreadyInitialized = fs.existsSync(path.join(vaultDir, "tools.yaml"));
-      let config = alreadyInitialized ? readConfig(vaultDir) : null;
-      if (config) {
-        config = ensureResolverModeValid(config, vaultDir);
-      }
+      const config = alreadyInitialized ? readConfig(vaultDir) : null;
       const setupScript = path.resolve(path.join(__dirname, "..", "bin", "vault-setup.sh"));
       const hasSetupScript = fs.existsSync(setupScript);
 
@@ -593,8 +570,7 @@ export function registerCliCommands(program: CliProgram): void {
       }
 
       const vaultDir = getVaultDir();
-      let config = readConfig(vaultDir);
-      config = ensureResolverModeValid(config, vaultDir);
+      const config = readConfig(vaultDir);
       const passphrase = getPassphrase(vaultDir);
 
       // Check for existing credential
@@ -625,10 +601,6 @@ export function registerCliCommands(program: CliProgram): void {
       const guess = guessCredentialFormat(options.key, tool);
       const toolNameTemplate = KNOWN_TOOLS[tool];
 
-      // Track whether credential has already been encrypted (to avoid double-encryption
-      // when falling through from guess/template path to interactive flow via "edit")
-      let credentialStored = false;
-
       // ── Known-prefix auto-config path (high confidence) ──
       if (guess.knownToolName && guess.confidence === "high") {
         if (!options.key) {
@@ -638,86 +610,47 @@ export function registerCliCommands(program: CliProgram): void {
 
         // Encrypt first
         console.log("");
-        if (!credentialStored) {
-          await writeCredentialFile(vaultDir, tool, options.key, passphrase);
-          if (config.resolverMode === "binary") {
-            const syncOk = syncToSystemVault(vaultDir, tool);
-            if (!syncOk) {
-              console.log(`\n⚠ Warning: Credential stored locally but NOT synced to system vault.`);
-            }
+        await writeCredentialFile(vaultDir, tool, options.key, passphrase);
+        if (config.resolverMode === "binary") {
+          const syncOk = syncToSystemVault(vaultDir, tool);
+          if (!syncOk) {
+            console.log(`\n⚠ Warning: Credential stored locally but NOT synced to system vault.`);
           }
-          credentialStored = true;
-          console.log(`✓ Credential encrypted and stored (AES-256-GCM)`);
         }
+        console.log(`✓ Credential encrypted and stored (AES-256-GCM)`);
         console.log(formatGuessDisplay(guess, tool));
 
         if (guess.knownToolName !== tool) {
           console.log(`\n  ℹ This looks like a ${guess.knownToolName} credential — storing as "${tool}"`);
         }
 
-        let inject = [...guess.suggestedInject];
-        let scrub = { patterns: [...guess.suggestedScrub.patterns] };
-        if (options.scrubPattern) scrub.patterns.push(options.scrubPattern);
-
         if (!options.yes) {
-          // Show auto-detected config for review
-          console.log("\n  Auto-detected config:");
-          for (const rule of inject) {
-            if (rule.tool === "web_fetch") {
-              const headerPreview = rule.headers
-                ? Object.entries(rule.headers).map(([k, v]) => `${k}: ${v}`).join(", ")
-                : "(none)";
-              console.log(`    - API header injection: ${headerPreview} @ ${rule.urlMatch ?? "*"}`);
-            } else if (rule.tool === "exec") {
-              const envPreview = rule.env ? Object.keys(rule.env).join(", ") : "(none)";
-              console.log(`    - CLI env injection: ${envPreview} @ ${rule.commandMatch ?? "*"}`);
-            } else if (rule.tool === "browser" && rule.type === "browser-password") {
-              console.log(`    - Browser login on ${rule.domainPin?.join(", ") ?? "(any domain)"}`);
-            } else if (rule.tool === "browser" && rule.type === "browser-cookie") {
-              console.log(`    - Browser session on ${rule.domainPin?.join(", ") ?? "(any domain)"}`);
-            }
-          }
-          if (scrub.patterns.length > 0) {
-            console.log(`    - Scrub patterns: ${scrub.patterns.join(", ")}`);
-          }
-
-          const confirm = await promptUser("\nSave with this config? [Y/n/e(dit)] ");
-          const answer = confirm.toLowerCase().trim();
-          if (answer === "n" || answer === "no") {
+          const confirm = await promptUser("\nSave? [Y/n] ");
+          if (confirm.toLowerCase() === "n" || confirm.toLowerCase() === "no") {
             console.log("\n✗ Aborted.");
             return;
           }
-          if (answer === "e" || answer === "edit") {
-            // Drop into interactive flow — reuse the full menu
-            console.log("\nSwitching to interactive setup...\n");
-            // Fall through to interactive flow below by clearing the known-tool match
-            // (we already encrypted the key above, so skip re-encryption in interactive flow)
-          } else {
-            // Accept auto-detected config
-            await writeToolConfigEntry(tool, inject, scrub, options as any, config, vaultDir);
-            return;
-          }
-        } else {
-          await writeToolConfigEntry(tool, inject, scrub, options as any, config, vaultDir);
-          return;
         }
-        // If we get here, user chose "edit" — fall through to interactive flow below
+
+        const inject = [...guess.suggestedInject];
+        const scrub = { patterns: [...guess.suggestedScrub.patterns] };
+        if (options.scrubPattern) scrub.patterns.push(options.scrubPattern);
+
+        await writeToolConfigEntry(tool, inject, scrub, options as any, config, vaultDir);
+        return;
       }
 
       // ── Known-name template path (tool name matches registry template) ──
       if (toolNameTemplate) {
         console.log("");
-        if (!credentialStored) {
-          await writeCredentialFile(vaultDir, tool, options.key, passphrase);
-          if (config.resolverMode === "binary") {
-            const syncOk = syncToSystemVault(vaultDir, tool);
-            if (!syncOk) {
-              console.log(`\n⚠ Warning: Credential stored locally but NOT synced to system vault.`);
-            }
+        await writeCredentialFile(vaultDir, tool, options.key, passphrase);
+        if (config.resolverMode === "binary") {
+          const syncOk = syncToSystemVault(vaultDir, tool);
+          if (!syncOk) {
+            console.log(`\n⚠ Warning: Credential stored locally but NOT synced to system vault.`);
           }
-          credentialStored = true;
-          console.log(`✓ Credential encrypted and stored (AES-256-GCM)`);
         }
+        console.log(`✓ Credential encrypted and stored (AES-256-GCM)`);
         console.log(`  Detected: ${guess.displayName}`);
         console.log(`  Using known template for tool: ${tool}`);
 
@@ -739,30 +672,19 @@ export function registerCliCommands(program: CliProgram): void {
             }
           }
 
-          const confirm = await promptUser("\nSave using this template? [Y/n/e(dit)] ");
-          const answer = confirm.toLowerCase().trim();
-          if (answer === "n" || answer === "no") {
+          const confirm = await promptUser("\nSave using this template? [Y/n] ");
+          if (confirm.toLowerCase() === "n" || confirm.toLowerCase() === "no") {
             console.log("\n✗ Aborted.");
             return;
           }
-          if (answer === "e" || answer === "edit") {
-            console.log("\nSwitching to interactive setup...\n");
-            // Fall through to interactive flow below
-          } else {
-            const inject = [...toolNameTemplate.inject];
-            const scrub = { patterns: [...toolNameTemplate.scrub.patterns] };
-            if (options.scrubPattern) scrub.patterns.push(options.scrubPattern);
-            await writeToolConfigEntry(tool, inject, scrub, options as any, config, vaultDir);
-            return;
-          }
-        } else {
-          const inject = [...toolNameTemplate.inject];
-          const scrub = { patterns: [...toolNameTemplate.scrub.patterns] };
-          if (options.scrubPattern) scrub.patterns.push(options.scrubPattern);
-          await writeToolConfigEntry(tool, inject, scrub, options as any, config, vaultDir);
-          return;
         }
-        // If we get here, user chose "edit" — fall through to interactive flow below
+
+        const inject = [...toolNameTemplate.inject];
+        const scrub = { patterns: [...toolNameTemplate.scrub.patterns] };
+        if (options.scrubPattern) scrub.patterns.push(options.scrubPattern);
+
+        await writeToolConfigEntry(tool, inject, scrub, options as any, config, vaultDir);
+        return;
       }
 
       // ── Interactive flow (no --use, no known prefix/template) ──
@@ -771,14 +693,13 @@ export function registerCliCommands(program: CliProgram): void {
         return;
       }
 
-      // Encrypt key first if provided (and not already stored from guess/template path)
+      // Encrypt key first if provided
       console.log("");
-      if (options.key && !credentialStored) {
+      if (options.key) {
         await writeCredentialFile(vaultDir, tool, options.key, passphrase);
         if (config.resolverMode === "binary") {
           syncToSystemVault(vaultDir, tool);
         }
-        credentialStored = true;
         console.log(`✓ Credential encrypted and stored (AES-256-GCM)`);
       }
       console.log(`  Detected: ${guess.displayName}`);

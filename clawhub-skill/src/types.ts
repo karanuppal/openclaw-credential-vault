@@ -1,0 +1,282 @@
+/**
+ * Type definitions for the OpenClaw Credential Vault plugin.
+ */
+
+/** Injection rule for a specific tool call type */
+export interface InjectionRule {
+  tool: string; // "exec" | "web_fetch" | "browser" etc.
+  commandMatch?: string; // glob pattern for exec commands
+  urlMatch?: string; // glob pattern for web_fetch/browser URLs
+  env?: Record<string, string>; // env vars to inject (value contains $vault:toolname)
+  headers?: Record<string, string>; // headers to inject
+  /** Browser credential injection type */
+  type?: "browser-password" | "browser-cookie";
+  /** Domain pinning — credential only resolves on matching domains */
+  domainPin?: string[];
+  /** Browser injection method: "fill" for password, "cookie-jar" for cookies */
+  method?: "fill" | "cookie-jar";
+  /** Hint for password field identification */
+  fieldHint?: string;
+}
+
+/** A single Playwright-compatible cookie */
+export interface PlaywrightCookie {
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  expires: number; // Unix epoch seconds, -1 for session
+  httpOnly: boolean;
+  secure: boolean;
+  sameSite: "Strict" | "Lax" | "None";
+}
+
+/** Browser-cookie credential stored as JSON array of PlaywrightCookie */
+export interface BrowserCookieCredential {
+  cookies: PlaywrightCookie[];
+  domain: string;
+  capturedAt: string; // ISO timestamp
+}
+
+/** Scrub configuration for a tool */
+export interface ScrubConfig {
+  patterns: string[]; // regex patterns to match credential fragments
+}
+
+/** User's usage selection for vault add interactive/non-interactive flow */
+export interface UsageSelection {
+  /** API call injection (HTTP header) */
+  apiCalls?: {
+    urlPattern: string;  // e.g., "*api.gumroad.com/*"
+    headerName: string;  // e.g., "Authorization" or "x-resy-auth-token"
+    headerFormat: string; // e.g., "Bearer $token" or "$token"
+  };
+  /** CLI tool injection (environment variable) */
+  cliTool?: {
+    commandName?: string; // e.g., "gh" — UX shortcut, auto-generates commandMatch
+    commandMatch: string; // e.g., "gh*", "*gumroad*" — glob pattern
+    envVar: string;       // e.g., "GUMROAD_TOKEN"
+  };
+  /** Browser login injection (password fill) */
+  browserLogin?: {
+    domain: string; // e.g., ".gumroad.com"
+  };
+  /** Browser session injection (cookie jar) */
+  browserSession?: {
+    domain: string;
+    cookieFilePath: string; // path to JSON/Netscape cookie file
+  };
+  /** User-provided regex scrub patterns */
+  scrubPatterns: string[];
+}
+
+/** Known tool definition (ships with plugin) */
+export interface KnownToolDef {
+  inject: InjectionRule[];
+  scrub: ScrubConfig;
+}
+
+/** Rotation support level for a credential */
+export type RotationSupport = "manual" | "cli" | "api";
+
+/** Extended rotation metadata for a credential */
+export interface RotationMetadata {
+  rotationIntervalDays?: number;
+  scopes?: string[];
+  rotationProcedure?: string;
+  revokeUrl?: string;
+  rotationSupport?: RotationSupport;
+  label?: string;
+}
+
+/** Per-tool configuration stored in tools.yaml */
+export interface ToolConfig {
+  name: string;
+  addedAt: string; // ISO timestamp
+  lastRotated: string; // ISO timestamp
+  inject: InjectionRule[];
+  scrub: ScrubConfig;
+  rotation?: RotationMetadata;
+}
+
+/** Rotation status for a single credential (used by vault_status) */
+export interface CredentialRotationStatus {
+  name: string;
+  label?: string;
+  lastRotated: string;
+  rotationIntervalDays?: number;
+  daysOverdue: number;
+  isOverdue: boolean;
+  rotationSupport?: RotationSupport;
+  revokeUrl?: string;
+  rotationProcedure?: string;
+  scopes?: string[];
+  lastAccess?: string;
+}
+
+/** vault_status tool result */
+export interface VaultStatusResult {
+  totalCredentials: number;
+  overdueCount: number;
+  credentials: CredentialRotationStatus[];
+}
+
+/** Full tools.yaml structure */
+export interface VaultConfig {
+  version: number;
+  masterKeyMode: "passphrase" | "machine";
+  /** Credential resolution mode: "inline" (Phase 1, TS decrypts) or "binary" (Phase 2, Rust resolver) */
+  resolverMode?: "inline" | "binary";
+  /** Custom path to the Rust resolver binary (optional, auto-detected if not set) */
+  resolverPath?: string;
+  /**
+   * What to do when the Rust resolver fails (version mismatch, binary missing, etc.).
+   * - "block" (default): credential not injected, warning shown in tool output
+   * - "warn-and-inline": falls back to inline (TypeScript) decryption with audit warning
+   *
+   * Security note: "warn-and-inline" downgrades the isolation model — the agent process
+   * reads the encrypted file directly, bypassing OS-user separation. Use only if availability
+   * is more important than isolation.
+   */
+  onResolverFailure?: "block" | "warn-and-inline";
+  tools: Record<string, ToolConfig>;
+}
+
+/** Encrypted file metadata (derived from the binary format) */
+export interface EncryptedFileLayout {
+  salt: Buffer; // 16 bytes
+  nonce: Buffer; // 12 bytes
+  ciphertext: Buffer; // variable length
+  authTag: Buffer; // 16 bytes
+}
+
+/** Result of a tool call hook context */
+export interface ToolCallContext {
+  tool: string; // "exec" | "web_fetch" | etc.
+  params: Record<string, unknown>;
+}
+
+/** Audit log event — credential access */
+export interface AuditCredentialAccess {
+  type: "credential_access";
+  timestamp: string;
+  tool: string;
+  credential: string;
+  injectionType: string;
+  command: string;
+  sessionKey: string;
+  durationMs: number;
+  success: boolean;
+}
+
+/** Audit log event — scrubbing */
+export interface AuditScrubEvent {
+  type: "scrub";
+  timestamp: string;
+  hook: string;
+  credential: string;
+  pattern: string;
+  replacements: number;
+  sessionKey: string;
+}
+
+/** Audit log event — compaction */
+export interface AuditCompactionEvent {
+  type: "compaction";
+  timestamp: string;
+  sessionKey: string;
+  scrubbingActive: boolean;
+}
+
+/** Audit log event — resolver failure */
+export interface AuditResolverFailure {
+  type: "resolver_failure";
+  timestamp: string;
+  tool: string;
+  error: string;
+  message: string;
+  pluginVersion: number;
+  resolverVersion: number | null;
+  policy: string;
+}
+
+/** Audit log event — security downgrade (inline fallback in binary mode) */
+export interface AuditSecurityDowngrade {
+  type: "security_downgrade";
+  timestamp: string;
+  tool: string;
+  reason: string;
+  originalError: string;
+}
+
+/** Union of all audit event types */
+export type AuditEvent = AuditCredentialAccess | AuditScrubEvent | AuditCompactionEvent | AuditResolverFailure | AuditSecurityDowngrade;
+
+/** Agent tool interface (subset we use for vault_status) */
+export interface AgentToolDef {
+  name: string;
+  label: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  execute: (
+    toolCallId: string,
+    params: Record<string, unknown>,
+    signal?: AbortSignal,
+    onUpdate?: (partialResult: unknown) => void
+  ) => Promise<{
+    content: Array<{ type: "text"; text: string }>;
+    details: unknown;
+  }>;
+}
+
+/** Plugin API interface (subset we use — matches OpenClawPluginApi) */
+export interface PluginApi {
+  id: string;
+  name: string;
+  version?: string;
+  description?: string;
+  source: string;
+  config: Record<string, unknown>;
+  pluginConfig?: Record<string, unknown>;
+  runtime: Record<string, unknown>;
+  logger: {
+    debug?: (message: string) => void;
+    info: (message: string) => void;
+    warn: (message: string) => void;
+    error: (message: string) => void;
+  };
+  on(
+    hook: string,
+    handler: (...args: any[]) => any,
+    options?: { priority?: number }
+  ): void;
+  registerCli(
+    fn: (ctx: { program: CliProgram; config: Record<string, unknown>; workspaceDir?: string; logger: Record<string, unknown> }) => void,
+    options?: { commands?: string[] }
+  ): void;
+  registerTool(
+    tool: AgentToolDef | ((ctx: unknown) => AgentToolDef | AgentToolDef[] | null | undefined),
+    options?: { name?: string; names?: string[]; optional?: boolean }
+  ): void;
+  registerHook(
+    events: string | string[],
+    handler: (...args: any[]) => any,
+    opts?: { entry?: unknown; name?: string; description?: string; register?: boolean }
+  ): void;
+  registerHttpRoute(params: Record<string, unknown>): void;
+  registerCommand(command: Record<string, unknown>): void;
+  resolvePath(input: string): string;
+}
+
+/** CLI program interface (Commander-like) */
+export interface CliProgram {
+  command(name: string): CliCommand;
+}
+
+export interface CliCommand {
+  description(desc: string): CliCommand;
+  argument(arg: string, desc?: string): CliCommand;
+  option(flags: string, desc?: string, defaultVal?: unknown): CliCommand;
+  action(fn: (...args: any[]) => void | Promise<void>): CliCommand;
+  command(name: string): CliCommand;
+}
