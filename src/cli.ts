@@ -104,15 +104,34 @@ function getPassphrase(vaultDir: string): string {
  * If so, downgrade to "inline" and warn.
  * Returns the (possibly updated) config.
  */
-export function ensureResolverModeValid(config: VaultConfig, vaultDir: string): VaultConfig {
+/**
+ * Check if a binary is actually executable on this platform (not just existing on disk).
+ * Catches the case where a Linux binary exists in a macOS worktree.
+ */
+function isExecutable(binaryPath: string): boolean {
+  try {
+    fs.accessSync(binaryPath, fs.constants.X_OK);
+    // Also try to detect architecture mismatch: run with --version or just spawn briefly
+    const { execFileSync } = require("node:child_process");
+    execFileSync(binaryPath, ["--version"], { timeout: 5000, stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function ensureResolverModeValid(config: VaultConfig, vaultDir: string, persist = true): VaultConfig {
   if (config.resolverMode === "binary") {
     const binaryPath = findResolverBinary(config.resolverPath);
-    if (!binaryPath) {
-      console.log("⚠ Resolver mode is \"binary\" but no resolver binary found.");
+    if (!binaryPath || !isExecutable(binaryPath)) {
+      const reason = !binaryPath ? "no resolver binary found" : "resolver binary exists but cannot execute (wrong platform?)";
+      console.log(`⚠ Resolver mode is "binary" but ${reason}.`);
       console.log("  Switching to \"inline\" mode (credentials decrypted in-process).");
       console.log("  To use binary mode, run: sudo bash vault-setup.sh\n");
       config = { ...config, resolverMode: "inline" };
-      writeConfig(vaultDir, config);
+      if (persist) {
+        writeConfig(vaultDir, config);
+      }
     }
   }
   return config;
@@ -594,7 +613,9 @@ export function registerCliCommands(program: CliProgram): void {
 
       const vaultDir = getVaultDir();
       let config = readConfig(vaultDir);
-      config = ensureResolverModeValid(config, vaultDir);
+      // Don't persist the downgrade yet — wait until vault add succeeds
+      // (an aborted add shouldn't permanently change the security config)
+      config = ensureResolverModeValid(config, vaultDir, false);
       const passphrase = getPassphrase(vaultDir);
 
       // Check for existing credential

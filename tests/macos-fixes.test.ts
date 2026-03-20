@@ -185,10 +185,17 @@ describe("Fix 3: ensureResolverModeValid", () => {
     }
   });
 
-  it("should be a no-op when resolver binary exists (binary mode valid)", () => {
-    // This test only runs if a resolver binary actually exists
-    if (!findResolverBinary()) {
-      return;
+  it("should be a no-op when resolver binary exists and is executable", () => {
+    // This test only runs if a resolver binary actually exists AND can execute
+    // (on macOS with a Linux binary in the repo, findResolverBinary returns a path
+    // but isExecutable fails — that's the exact edge case we're fixing)
+    const binaryPath = findResolverBinary();
+    if (!binaryPath) return;
+    try {
+      const { execFileSync } = require("node:child_process");
+      execFileSync(binaryPath, ["--version"], { timeout: 5000, stdio: "ignore" });
+    } catch {
+      return; // Binary exists but can't execute — skip this test
     }
 
     const { vaultDir, cleanup } = createTestVault();
