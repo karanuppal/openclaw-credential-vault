@@ -8,3 +8,4 @@ resolver/target/
 docs/SCRUB-EXPERIMENTS*.md
 docs/MESSAGE-SENDING-TEST-PLAN.md
 clawhub-skill/
+.npmrc
