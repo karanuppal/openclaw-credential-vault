@@ -38,6 +38,7 @@ import register, {
   handleToolResultPersist,
   handleBeforeMessageWrite,
   _resetResolverState,
+  _state,
 } from "../src/index.js";
 
 // ---- Test Helpers ----
@@ -1548,5 +1549,291 @@ describe("Hook E2E: macOS Fix — inline mode full round-trip", () => {
     expect(warnings.length).toBeGreaterThan(0);
 
     vi.restoreAllMocks();
+  });
+});
+
+// ================================================================
+// Audit Logging: browser-password and browser-cookie injections
+// ================================================================
+describe("Hook E2E: Audit Logging — browser-password injection", () => {
+  beforeEach(async () => {
+    await setupVault({
+      "test-cred": {
+        credential: "SuperSecret123!",
+        config: {
+          inject: [
+            {
+              tool: "browser",
+              type: "browser-password",
+              domainPin: [".example.com"],
+              method: "fill",
+            },
+          ],
+          scrub: { patterns: [] },
+        },
+      },
+    });
+  });
+
+  afterEach(cleanup);
+
+  it("should track browser-password injection in currentInjections (direct text param)", async () => {
+    // Populate tab URL cache
+    handleAfterToolCall(
+      {
+        toolName: "browser",
+        params: { action: "navigate", url: "https://example.com/login", targetId: "TAB1" },
+        result: {
+          content: [{ type: "text", text: '{"ok":true}' }],
+          details: { ok: true, targetId: "TAB1", url: "https://example.com/login" },
+        },
+      },
+      makeAfterCtx("browser"),
+    );
+
+    // Act with $vault: placeholder
+    const result = await handleBeforeToolCall(
+      {
+        toolName: "browser",
+        params: { action: "act", text: "$vault:test-cred", targetId: "TAB1" },
+      },
+      makeBeforeCtx("browser"),
+    );
+
+    expect(result).toBeDefined();
+    expect(result!.block).toBeFalsy();
+    expect(result!.params!.text).toBe("SuperSecret123!");
+
+    // Verify currentInjections was populated
+    expect(_state).not.toBeNull();
+    expect(_state!.currentInjections.length).toBe(1);
+    expect(_state!.currentInjections[0].tool).toBe("browser");
+    expect(_state!.currentInjections[0].credential).toBe("test-cred");
+    expect(_state!.currentInjections[0].injectionType).toBe("browser-password");
+    expect(_state!.currentInjections[0].command).toBe("https://example.com/login");
+    expect(_state!.currentInjections[0].startTime).toBeGreaterThan(0);
+  });
+
+  it("should track browser-password injection in currentInjections (nested request param)", async () => {
+    // Populate tab URL cache
+    handleAfterToolCall(
+      {
+        toolName: "browser",
+        params: { action: "navigate", url: "https://example.com/login", targetId: "TAB2" },
+        result: {
+          content: [{ type: "text", text: '{"ok":true}' }],
+          details: { ok: true, targetId: "TAB2", url: "https://example.com/login" },
+        },
+      },
+      makeAfterCtx("browser"),
+    );
+
+    // Act with $vault: in nested request.text
+    const result = await handleBeforeToolCall(
+      {
+        toolName: "browser",
+        params: {
+          action: "act",
+          targetId: "TAB2",
+          request: { kind: "fill", text: "$vault:test-cred", ref: "e9" },
+        },
+      },
+      makeBeforeCtx("browser"),
+    );
+
+    expect(result).toBeDefined();
+    expect(result!.block).toBeFalsy();
+    const req = result!.params!.request as Record<string, unknown>;
+    expect(req.text).toBe("SuperSecret123!");
+
+    // Verify currentInjections
+    expect(_state!.currentInjections.length).toBe(1);
+    expect(_state!.currentInjections[0].injectionType).toBe("browser-password");
+    expect(_state!.currentInjections[0].credential).toBe("test-cred");
+  });
+
+  it("should NOT track injection when domain pin blocks", async () => {
+    // Populate cache with wrong domain
+    handleAfterToolCall(
+      {
+        toolName: "browser",
+        params: { action: "navigate", url: "https://evil.com/phish", targetId: "TAB3" },
+        result: {
+          content: [{ type: "text", text: '{"ok":true}' }],
+          details: { ok: true, targetId: "TAB3", url: "https://evil.com/phish" },
+        },
+      },
+      makeAfterCtx("browser"),
+    );
+
+    const result = await handleBeforeToolCall(
+      {
+        toolName: "browser",
+        params: { action: "act", text: "$vault:test-cred", targetId: "TAB3" },
+      },
+      makeBeforeCtx("browser"),
+    );
+
+    expect(result!.block).toBe(true);
+    // No injection should be tracked
+    expect(_state!.currentInjections.length).toBe(0);
+  });
+
+  it("should write audit log entry via after_tool_call", async () => {
+    // Populate tab URL cache
+    handleAfterToolCall(
+      {
+        toolName: "browser",
+        params: { action: "navigate", url: "https://example.com/login", targetId: "TAB4" },
+        result: {
+          content: [{ type: "text", text: '{"ok":true}' }],
+          details: { ok: true, targetId: "TAB4", url: "https://example.com/login" },
+        },
+      },
+      makeAfterCtx("browser"),
+    );
+
+    // Inject
+    await handleBeforeToolCall(
+      {
+        toolName: "browser",
+        params: { action: "act", text: "$vault:test-cred", targetId: "TAB4" },
+      },
+      makeBeforeCtx("browser"),
+    );
+
+    expect(_state!.currentInjections.length).toBe(1);
+
+    // Simulate after_tool_call — this should flush currentInjections to audit log
+    handleAfterToolCall(
+      {
+        toolName: "browser",
+        params: { action: "act", text: "[scrubbed]", targetId: "TAB4" },
+        result: { content: [{ type: "text", text: '{"ok":true}' }], details: { ok: true } },
+      },
+      makeAfterCtx("browser"),
+    );
+
+    // currentInjections should be cleared after after_tool_call
+    expect(_state!.currentInjections.length).toBe(0);
+
+    // Verify audit log file was written
+    const auditLogPath = path.join(vaultDir, "audit.log");
+    expect(fs.existsSync(auditLogPath)).toBe(true);
+    const logContent = fs.readFileSync(auditLogPath, "utf-8");
+    const entries = logContent.trim().split("\n").map((l: string) => JSON.parse(l));
+    const browserEntry = entries.find(
+      (e: any) => e.type === "credential_access" && e.injectionType === "browser-password"
+    );
+    expect(browserEntry).toBeDefined();
+    expect(browserEntry.credential).toBe("test-cred");
+    expect(browserEntry.tool).toBe("browser");
+  });
+});
+
+describe("Hook E2E: Audit Logging — browser-cookie injection", () => {
+  const validCookies = JSON.stringify([
+    {
+      name: "session-id",
+      value: "abc-123",
+      domain: ".amazon.com",
+      path: "/",
+      expires: Math.floor(Date.now() / 1000) + 86400,
+      httpOnly: true,
+      secure: true,
+      sameSite: "Lax",
+    },
+  ]);
+
+  beforeEach(async () => {
+    await setupVault({
+      "amazon-cookies": {
+        credential: validCookies,
+        config: {
+          inject: [
+            {
+              tool: "browser",
+              type: "browser-cookie",
+              domainPin: [".amazon.com"],
+              method: "cookie-jar",
+            },
+          ],
+          scrub: { patterns: [] },
+        },
+      },
+    });
+  });
+
+  afterEach(cleanup);
+
+  it("should track browser-cookie injection in currentInjections on navigate", async () => {
+    const result = await handleBeforeToolCall(
+      {
+        toolName: "browser",
+        params: { action: "navigate", url: "https://www.amazon.com/orders" },
+      },
+      makeBeforeCtx("browser"),
+    );
+
+    expect(result).toBeDefined();
+    expect(result!.params!._vaultCookies).toBeDefined();
+
+    // Verify currentInjections
+    expect(_state!.currentInjections.length).toBe(1);
+    expect(_state!.currentInjections[0].tool).toBe("browser");
+    expect(_state!.currentInjections[0].credential).toBe("amazon-cookies");
+    expect(_state!.currentInjections[0].injectionType).toBe("browser-cookie");
+    expect(_state!.currentInjections[0].command).toBe("https://www.amazon.com/orders");
+  });
+
+  it("should NOT track cookie injection when domain doesn't match", async () => {
+    const result = await handleBeforeToolCall(
+      {
+        toolName: "browser",
+        params: { action: "navigate", url: "https://www.google.com" },
+      },
+      makeBeforeCtx("browser"),
+    );
+
+    expect(result).toBeDefined();
+    expect(result!.params!._vaultCookies).toBeUndefined();
+    expect(_state!.currentInjections.length).toBe(0);
+  });
+
+  it("should write audit log entry for cookie injection via after_tool_call", async () => {
+    // Inject cookies
+    await handleBeforeToolCall(
+      {
+        toolName: "browser",
+        params: { action: "navigate", url: "https://www.amazon.com/orders" },
+      },
+      makeBeforeCtx("browser"),
+    );
+
+    expect(_state!.currentInjections.length).toBe(1);
+
+    // Flush via after_tool_call
+    handleAfterToolCall(
+      {
+        toolName: "browser",
+        params: { action: "navigate", url: "https://www.amazon.com/orders" },
+        result: { content: [{ type: "text", text: '{"ok":true}' }], details: { ok: true, url: "https://www.amazon.com/orders" } },
+      },
+      makeAfterCtx("browser"),
+    );
+
+    expect(_state!.currentInjections.length).toBe(0);
+
+    // Verify audit log
+    const auditLogPath = path.join(vaultDir, "audit.log");
+    expect(fs.existsSync(auditLogPath)).toBe(true);
+    const logContent = fs.readFileSync(auditLogPath, "utf-8");
+    const entries = logContent.trim().split("\n").map((l: string) => JSON.parse(l));
+    const cookieEntry = entries.find(
+      (e: any) => e.type === "credential_access" && e.injectionType === "browser-cookie"
+    );
+    expect(cookieEntry).toBeDefined();
+    expect(cookieEntry.credential).toBe("amazon-cookies");
+    expect(cookieEntry.tool).toBe("browser");
   });
 });
