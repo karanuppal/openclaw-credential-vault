@@ -437,6 +437,13 @@ async function handleBeforeToolCall(
             );
             if (result.allowed && result.resolvedValue) {
               params.text = result.resolvedValue;
+              state.currentInjections.push({
+                tool: toolName,
+                credential: vaultName,
+                injectionType: "browser-password",
+                command: currentUrl,
+                startTime: Date.now(),
+              });
             } else {
               // Block the action — return error instead of executing
               return {
@@ -475,6 +482,13 @@ async function handleBeforeToolCall(
               if (resolveResult.allowed && resolveResult.resolvedValue) {
                 request.text = resolveResult.resolvedValue;
                 params.request = request;
+                state.currentInjections.push({
+                  tool: toolName,
+                  credential: vaultName,
+                  injectionType: "browser-password",
+                  command: currentUrl,
+                  startTime: Date.now(),
+                });
               } else {
                 return {
                   block: true,
@@ -502,6 +516,7 @@ async function handleBeforeToolCall(
       if (navUrl) {
         const cookieRules = findAllBrowserCookieRules(state.config.tools);
         const cookiesToInject: PlaywrightCookie[] = [];
+        const injectedCookieCredentials: string[] = [];
 
         for (const { vaultToolName, rule } of cookieRules) {
           if (rule.domainPin && shouldInjectCookies(navUrl, rule.domainPin)) {
@@ -528,6 +543,9 @@ async function handleBeforeToolCall(
                   rule.domainPin
                 );
                 cookiesToInject.push(...valid);
+                if (valid.length > 0) {
+                  injectedCookieCredentials.push(vaultToolName);
+                }
               } catch {
                 // Invalid cookie JSON — skip
               }
@@ -538,6 +556,16 @@ async function handleBeforeToolCall(
         if (cookiesToInject.length > 0) {
           // Attach cookies to params for the browser tool to inject via addCookies()
           params._vaultCookies = cookiesToInject;
+          // Audit log for each cookie credential that contributed
+          for (const credName of injectedCookieCredentials) {
+            state.currentInjections.push({
+              tool: toolName,
+              credential: credName,
+              injectionType: "browser-cookie",
+              command: navUrl,
+              startTime: Date.now(),
+            });
+          }
         }
       }
     }
