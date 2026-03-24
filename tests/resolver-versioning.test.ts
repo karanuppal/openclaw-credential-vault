@@ -214,7 +214,7 @@ describe("Live resolver protocol version", () => {
       const meta = readMeta(vaultDir);
       if (!meta) throw new Error("Failed to init vault");
 
-      const passphrase = getMachinePassphrase(meta.installTimestamp);
+      const passphrase = getMachinePassphrase(meta.installTimestamp, meta.pinnedHostname);
       await writeCredentialFile(vaultDir, "test-tool", "test-secret-123", passphrase);
       upsertTool(vaultDir, "test-tool", {
         name: "test-tool",

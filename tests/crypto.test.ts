@@ -200,6 +200,12 @@ describe("Machine passphrase generation", () => {
     vi.resetModules();
   });
 
+  it("should fall back to os.hostname() when pinnedHostname is empty string", () => {
+    expect(getMachinePassphrase("ts", "")).toBe(
+      getMachinePassphrase("ts")
+    );
+  });
+
   it("should be a 64-char hex string (sha256)", () => {
     const p = getMachinePassphrase("test");
     expect(p).toMatch(/^[0-9a-f]{64}$/);

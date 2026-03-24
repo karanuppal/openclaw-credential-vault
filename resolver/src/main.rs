@@ -83,7 +83,7 @@ struct VaultMeta {
 /// Derive a machine-specific passphrase: SHA-256(hostname:uid:timestamp) as hex.
 /// Must produce identical output to TypeScript's getMachinePassphrase().
 fn get_machine_passphrase(install_timestamp: &str, pinned_hostname: Option<&str>) -> String {
-    let hostname = match pinned_hostname {
+    let hostname = match pinned_hostname.filter(|h| !h.is_empty()) {
         Some(h) => h.to_string(),
         None => hostname::get()
             .map(|h| h.to_string_lossy().to_string())
