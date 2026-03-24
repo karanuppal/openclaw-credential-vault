@@ -212,6 +212,57 @@ describe.skipIf(!HAS_RESOLVER)("Cross-language: TS encrypt → Rust decrypt", ()
       fs.rmSync(machineHome, { recursive: true, force: true });
     }
   });
+
+  it("should decrypt using pinned hostname in machine mode", async () => {
+    const machineHome = fs.mkdtempSync(path.join(os.tmpdir(), "vault-pinned-"));
+    const machineVaultDir = path.join(machineHome, ".openclaw", "vault");
+    fs.mkdirSync(machineVaultDir, { recursive: true });
+
+    try {
+      const credential = "ghp_pinnedHostnameTest123456";
+      const timestamp = "2026-03-24T00:00:00.000Z";
+      const pinnedHostname = "test-pinned-host";
+
+      // Get the machine passphrase from TypeScript with pinned hostname
+      const machinePassphrase = getMachinePassphrase(timestamp, pinnedHostname);
+
+      // Write metadata with pinnedHostname
+      const metaPath = path.join(machineVaultDir, ".vault-meta.json");
+      fs.writeFileSync(
+        metaPath,
+        JSON.stringify({
+          createdAt: "2026-03-24T00:00:00.000Z",
+          installTimestamp: timestamp,
+          masterKeyMode: "machine",
+          pinnedHostname: pinnedHostname,
+        })
+      );
+
+      // Encrypt with the pinned machine passphrase
+      await writeCredentialFile(machineVaultDir, "github", credential, machinePassphrase);
+
+      const request = JSON.stringify({
+        tool: "github",
+        context: "exec",
+        command: "gh pr list",
+      });
+
+      // Rust binary should read pinnedHostname from meta and derive the same passphrase
+      const result = execFileSync(resolverBinary, [], {
+        input: request,
+        env: {
+          HOME: machineHome,
+        },
+        timeout: 60000,
+      });
+
+      const response = JSON.parse(result.toString().trim());
+      expect(response.credential).toBe(credential);
+      console.log("✓ Pinned hostname machine passphrase matches between TS and Rust");
+    } finally {
+      fs.rmSync(machineHome, { recursive: true, force: true });
+    }
+  });
 });
 
 describe.skipIf(!HAS_RESOLVER)("Cross-language: Rust binary error handling", () => {
