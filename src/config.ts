@@ -149,6 +149,7 @@ export function initConfig(
     createdAt: new Date().toISOString(),
     installTimestamp: installTimestamp ?? new Date().toISOString(),
     masterKeyMode,
+    pinnedHostname: require("node:os").hostname(),
   };
   fs.mkdirSync(vaultDir, { recursive: true });
   fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2), "utf8");
@@ -163,7 +164,7 @@ export function initConfig(
  */
 export function readMeta(
   vaultDir: string
-): { createdAt: string; installTimestamp: string; masterKeyMode: string } | null {
+): { createdAt: string; installTimestamp: string; masterKeyMode: string; pinnedHostname?: string } | null {
   const metaPath = path.join(vaultDir, ".vault-meta.json");
   if (!fs.existsSync(metaPath)) return null;
   try {
