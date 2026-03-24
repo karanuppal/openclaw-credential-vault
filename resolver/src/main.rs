@@ -76,14 +76,19 @@ struct VaultMeta {
     install_timestamp: String,
     #[serde(rename = "masterKeyMode")]
     master_key_mode: String,
+    #[serde(rename = "pinnedHostname")]
+    pinned_hostname: Option<String>,
 }
 
 /// Derive a machine-specific passphrase: SHA-256(hostname:uid:timestamp) as hex.
 /// Must produce identical output to TypeScript's getMachinePassphrase().
-fn get_machine_passphrase(install_timestamp: &str) -> String {
-    let hostname = hostname::get()
-        .map(|h| h.to_string_lossy().to_string())
-        .unwrap_or_default();
+fn get_machine_passphrase(install_timestamp: &str, pinned_hostname: Option<&str>) -> String {
+    let hostname = match pinned_hostname {
+        Some(h) => h.to_string(),
+        None => hostname::get()
+            .map(|h| h.to_string_lossy().to_string())
+            .unwrap_or_default(),
+    };
     let uid = unsafe { libc::getuid() };
     let material = format!("{}:{}:{}", hostname, uid, install_timestamp);
     let mut hasher = Sha256::new();
@@ -482,7 +487,7 @@ fn main() {
             ),
         }
     } else {
-        get_machine_passphrase(&meta.install_timestamp)
+        get_machine_passphrase(&meta.install_timestamp, meta.pinned_hostname.as_deref())
     };
 
     // 4. Read encrypted file
@@ -661,10 +666,38 @@ mod tests {
     #[test]
     fn test_machine_passphrase_deterministic() {
         let ts = "2026-03-08T00:00:00.000Z";
-        let p1 = get_machine_passphrase(ts);
-        let p2 = get_machine_passphrase(ts);
+        let p1 = get_machine_passphrase(ts, None);
+        let p2 = get_machine_passphrase(ts, None);
         assert_eq!(p1, p2, "Same timestamp should produce same passphrase");
         assert_eq!(p1.len(), 64, "SHA-256 hex should be 64 chars");
+    }
+
+    /// Test pinned hostname is used when provided.
+    #[test]
+    fn test_machine_passphrase_pinned_hostname() {
+        let ts = "2026-03-08T00:00:00.000Z";
+        let p1 = get_machine_passphrase(ts, Some("pinned-host"));
+        let p2 = get_machine_passphrase(ts, Some("pinned-host"));
+        assert_eq!(p1, p2, "Same pinned hostname should produce same passphrase");
+        assert_eq!(p1.len(), 64);
+    }
+
+    /// Test pinned hostname produces different result from live hostname.
+    #[test]
+    fn test_machine_passphrase_pinned_differs_from_live() {
+        let ts = "2026-03-08T00:00:00.000Z";
+        let live = get_machine_passphrase(ts, None);
+        let pinned = get_machine_passphrase(ts, Some("definitely-not-the-real-hostname"));
+        assert_ne!(live, pinned, "Pinned hostname should produce different passphrase than live");
+    }
+
+    /// Test different pinned hostnames produce different passphrases.
+    #[test]
+    fn test_machine_passphrase_different_pinned_hostnames() {
+        let ts = "2026-03-08T00:00:00.000Z";
+        let p1 = get_machine_passphrase(ts, Some("host-a"));
+        let p2 = get_machine_passphrase(ts, Some("host-b"));
+        assert_ne!(p1, p2, "Different pinned hostnames should produce different passphrases");
     }
 
     /// Test JSON request deserialization.
