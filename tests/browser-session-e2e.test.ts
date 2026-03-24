@@ -97,7 +97,7 @@ describe("browser-session end-to-end", () => {
     expect(cfg.inject[0].domainPin).toEqual([".gumroad.com"]);
 
     const meta = configModule.readMeta(tmpDir);
-    const passphrase = getMachinePassphrase(meta?.installTimestamp);
+    const passphrase = getMachinePassphrase(meta?.installTimestamp, meta?.pinnedHostname);
     const decrypted = await readCredentialFile(tmpDir, "gumroad-session", passphrase);
     const parsed = JSON.parse(decrypted);
     expect(parsed.cookies).toHaveLength(1);

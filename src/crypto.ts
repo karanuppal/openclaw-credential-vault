@@ -45,7 +45,7 @@ export async function deriveKey(
  * Used when no user passphrase is provided (machine key mode).
  */
 export function getMachinePassphrase(installTimestamp?: string, pinnedHostname?: string): string {
-  const hostname = pinnedHostname ?? os.hostname();
+  const hostname = pinnedHostname || os.hostname();
   const uid = process.getuid?.() ?? 0;
   const timestamp = installTimestamp ?? "default";
   const material = `${hostname}:${uid}:${timestamp}`;

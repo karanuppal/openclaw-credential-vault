@@ -105,7 +105,7 @@ async function setupVault(tools: Record<string, { credential: string; config: Pa
 
   initConfig(vaultDir, "machine");
   const meta = readMeta(vaultDir);
-  passphrase = getMachinePassphrase(meta!.installTimestamp);
+  passphrase = getMachinePassphrase(meta!.installTimestamp, meta!.pinnedHostname);
 
   let config = readConfig(vaultDir);
   for (const [name, tool] of Object.entries(tools)) {
@@ -1238,7 +1238,7 @@ describe("Hook E2E: macOS Fix — binary mode with missing resolver", () => {
 
     initConfig(vaultDir, "machine");
     const meta = readMeta(vaultDir);
-    passphrase = getMachinePassphrase(meta!.installTimestamp);
+    passphrase = getMachinePassphrase(meta!.installTimestamp, meta!.pinnedHostname);
 
     // Write credential
     await writeCredentialFile(vaultDir, "github", "ghp_realtoken123456789012345678901234", passphrase);
@@ -1308,7 +1308,7 @@ describe("Hook E2E: macOS Fix — binary mode with missing resolver", () => {
 
     initConfig(vaultDir, "machine");
     const meta = readMeta(vaultDir);
-    passphrase = getMachinePassphrase(meta!.installTimestamp);
+    passphrase = getMachinePassphrase(meta!.installTimestamp, meta!.pinnedHostname);
 
     await writeCredentialFile(vaultDir, "github", "ghp_realtoken123456789012345678901234", passphrase);
 
@@ -1359,7 +1359,7 @@ describe("Hook E2E: macOS Fix — hot-reload resolverMode change", () => {
 
     initConfig(vaultDir, "machine");
     const meta = readMeta(vaultDir);
-    passphrase = getMachinePassphrase(meta!.installTimestamp);
+    passphrase = getMachinePassphrase(meta!.installTimestamp, meta!.pinnedHostname);
 
     await writeCredentialFile(vaultDir, "github", "ghp_realtoken123456789012345678901234", passphrase);
 

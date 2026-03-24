@@ -115,7 +115,7 @@ describe("E2E Suite 1: Phase 1 Full Flow (inline mode)", () => {
     config = initConfig(vaultDir, "machine");
     const meta = readMeta(vaultDir);
     expect(meta).not.toBeNull();
-    passphrase = getMachinePassphrase(meta!.installTimestamp);
+    passphrase = getMachinePassphrase(meta!.installTimestamp, meta!.pinnedHostname);
   });
 
   afterAll(() => {
@@ -222,7 +222,7 @@ describe.skipIf(!HAS_RESOLVER)("E2E Suite 2: Phase 2 Full Flow (binary mode)", (
     ({ home, vaultDir } = makeTempVault());
     config = initConfig(vaultDir, "machine");
     const meta = readMeta(vaultDir);
-    passphrase = getMachinePassphrase(meta!.installTimestamp);
+    passphrase = getMachinePassphrase(meta!.installTimestamp, meta!.pinnedHostname);
 
     // Write credential + tool config
     await writeCredentialFile(vaultDir, "gumroad", GUMROAD_KEY, passphrase);
@@ -311,7 +311,7 @@ describe.skipIf(!HAS_RESOLVER)("E2E Suite 3: Phase 1 → Phase 2 Migration", () 
     const configP1 = initConfig(vaultDirP1, "machine");
     const meta = readMeta(vaultDirP1);
     installTimestamp = meta!.installTimestamp;
-    passphrase = getMachinePassphrase(installTimestamp);
+    passphrase = getMachinePassphrase(installTimestamp, meta!.pinnedHostname);
 
     // Add 3 credentials
     let cfg = configP1;

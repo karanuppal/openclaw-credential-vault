@@ -19,15 +19,17 @@ function createTestVault(): { vaultDir: string; passphrase: string; cleanup: () 
   const vaultDir = fs.mkdtempSync(path.join(os.tmpdir(), "vault-macos-test-"));
   const installTimestamp = new Date().toISOString();
 
+  const pinnedHostname = os.hostname();
   const metaPath = path.join(vaultDir, ".vault-meta.json");
   fs.writeFileSync(metaPath, JSON.stringify({
     createdAt: installTimestamp,
     installTimestamp,
     masterKeyMode: "machine",
+    pinnedHostname,
   }));
   fs.chmodSync(metaPath, 0o600);
 
-  const passphrase = getMachinePassphrase(installTimestamp);
+  const passphrase = getMachinePassphrase(installTimestamp, pinnedHostname);
 
   return {
     vaultDir,

@@ -33,7 +33,7 @@ describe("browser-password E2E — tab URL cache flow", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vault-browser-pw-e2e-"));
     initConfig(tmpDir, "machine");
     const meta = readMeta(tmpDir);
-    passphrase = getMachinePassphrase(meta?.installTimestamp);
+    passphrase = getMachinePassphrase(meta?.installTimestamp, meta?.pinnedHostname);
 
     // Store a credential
     await writeCredentialFile(tmpDir, "gumroad-login", "MySecretPassword123", passphrase);
