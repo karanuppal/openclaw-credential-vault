@@ -112,7 +112,7 @@ function loadState(): VaultState | null {
     if (!envPass) return null; // Can't decrypt without passphrase
     passphrase = envPass;
   } else {
-    passphrase = getMachinePassphrase(meta.installTimestamp);
+    passphrase = getMachinePassphrase(meta.installTimestamp, meta.pinnedHostname);
   }
 
   const scrubRules = compileScrubRules(config.tools);

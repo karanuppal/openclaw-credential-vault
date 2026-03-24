@@ -96,7 +96,7 @@ function getPassphrase(vaultDir: string): string {
     return passphrase;
   }
   // Machine mode: derive from machine characteristics
-  return getMachinePassphrase(meta?.installTimestamp);
+  return getMachinePassphrase(meta?.installTimestamp, meta?.pinnedHostname);
 }
 
 /**

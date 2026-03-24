@@ -176,6 +176,41 @@ describe("Vault initialization", () => {
     expect(meta!.installTimestamp).toBe("2026-03-08");
   });
 
+  it("initConfig writes pinnedHostname to .vault-meta.json", () => {
+    initConfig(tmpDir, "machine", "2026-03-08");
+    const metaPath = path.join(tmpDir, ".vault-meta.json");
+    const rawMeta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+    expect(rawMeta.pinnedHostname).toBe(os.hostname());
+  });
+
+  it("readMeta returns pinnedHostname when present", () => {
+    initConfig(tmpDir, "machine", "2026-03-08");
+    const meta = readMeta(tmpDir);
+    expect(meta).not.toBeNull();
+    expect(meta!.pinnedHostname).toBe(os.hostname());
+  });
+
+  it("readMeta returns undefined for pinnedHostname on legacy meta files without it", () => {
+    fs.mkdirSync(tmpDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, ".vault-meta.json"),
+      JSON.stringify(
+        {
+          createdAt: "2026-03-08T00:00:00.000Z",
+          installTimestamp: "2026-03-08",
+          masterKeyMode: "machine",
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    const meta = readMeta(tmpDir);
+    expect(meta).not.toBeNull();
+    expect(meta!.pinnedHostname).toBeUndefined();
+  });
+
   it("should set metadata file permissions to 0600", () => {
     initConfig(tmpDir, "machine");
     const metaPath = path.join(tmpDir, ".vault-meta.json");

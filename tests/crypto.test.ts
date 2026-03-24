@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -153,6 +153,51 @@ describe("Machine passphrase generation", () => {
     const p1 = getMachinePassphrase("2026-01-01");
     const p2 = getMachinePassphrase("2026-01-02");
     expect(p1).not.toBe(p2);
+  });
+
+  it("should use pinnedHostname when provided", () => {
+    const pinned1 = getMachinePassphrase("ts", "pinned-host");
+    const pinned2 = getMachinePassphrase("ts", "pinned-host");
+    const unpinned = getMachinePassphrase("ts");
+
+    expect(pinned1).toBe(pinned2);
+    expect(pinned1).not.toBe(unpinned);
+  });
+
+  it("should fall back to os.hostname() when pinnedHostname is undefined", () => {
+    expect(getMachinePassphrase("ts")).toBe(
+      getMachinePassphrase("ts", undefined)
+    );
+  });
+
+  it("should produce different passphrase for different pinnedHostnames", () => {
+    expect(getMachinePassphrase("ts", "pinned-host-a")).not.toBe(
+      getMachinePassphrase("ts", "pinned-host-b")
+    );
+  });
+
+  it("should produce consistent passphrase regardless of os.hostname() changes when pinned", async () => {
+    vi.resetModules();
+    vi.doMock("node:os", () => ({
+      default: { hostname: () => "host-a" },
+      hostname: () => "host-a",
+    }));
+    const { getMachinePassphrase: getWithHostA } = await import("../src/crypto.js");
+
+    vi.resetModules();
+    vi.doMock("node:os", () => ({
+      default: { hostname: () => "host-b" },
+      hostname: () => "host-b",
+    }));
+    const { getMachinePassphrase: getWithHostB } = await import("../src/crypto.js");
+
+    const first = getWithHostA("ts", "pinned-host");
+    const second = getWithHostB("ts", "pinned-host");
+
+    expect(first).toBe(second);
+
+    vi.doUnmock("node:os");
+    vi.resetModules();
   });
 
   it("should be a 64-char hex string (sha256)", () => {
